@@ -19,4 +19,4 @@ jobs:
       # as the PR description is too short, but otherwise the PRs are fine.
       if: ${{ github.event.pull_request.head.repo.owner.login != 'k8s-infra-cherrypick-robot' }}
       with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
+        github_token: ${{ secrets.GH_TOKEN }}

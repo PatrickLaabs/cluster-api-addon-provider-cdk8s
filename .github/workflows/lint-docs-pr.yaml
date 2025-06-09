@@ -6,7 +6,7 @@ on:
     paths:
       - '**.md'
 
-# Remove all permissions from GITHUB_TOKEN except metadata.
+# Remove all permissions from GH_TOKEN except metadata.
 permissions: {}
 
 jobs:
