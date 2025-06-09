@@ -23,17 +23,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
 	"sync"
-	"time"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing/object"
 	addonsv1alpha1 "github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/api/v1alpha1"
 	"github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/controllers"
+	"github.com/go-git/go-git/v5"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/stretchr/testify/mock"
@@ -42,7 +36,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
@@ -51,7 +44,7 @@ import (
 	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake" // Import fake client
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
@@ -62,12 +55,6 @@ type MockCommander struct {
 }
 
 func (m *MockCommander) CombinedOutput(command string, args ...string) ([]byte, error) {
-	// This is a simplification. In a real scenario, you might want to pass the exec.Cmd object
-	// or have a more sophisticated way to set up expectations for specific commands and their arguments.
-	// For this test, we'll base the mock on the first argument (the command itself, e.g., "git", "cdk8s").
-	// We'll also consider the directory if it's set via a different method or part of args.
-	// For now, we assume the test will set expectations on "git clone", "git checkout", or "cdk8s synth".
-
 	var MOCK_COMMAND_TYPE string
 	if command == "git" && len(args) > 0 && args[0] == "clone" {
 		MOCK_COMMAND_TYPE = "git clone"
@@ -76,10 +63,9 @@ func (m *MockCommander) CombinedOutput(command string, args ...string) ([]byte, 
 	} else if command == "cdk8s" && len(args) > 0 && args[0] == "synth" {
 		MOCK_COMMAND_TYPE = "cdk8s synth"
 	} else {
-		MOCK_COMMAND_TYPE = command // Fallback for other commands if any
+		MOCK_COMMAND_TYPE = command
 	}
 
-	// Allow tests to set expectations on specific command "types"
 	calledArgs := m.Called(MOCK_COMMAND_TYPE)
 	output := calledArgs.Get(0)
 	err := calledArgs.Error(1)
@@ -89,71 +75,47 @@ func (m *MockCommander) CombinedOutput(command string, args ...string) ([]byte, 
 	}
 	byteOutput, ok := output.([]byte)
 	if !ok && output != nil {
-		// This case should ideally not happen if mocks are set up correctly.
-		// It means output was not nil but also not []byte.
 		return nil, errors.New("mock commander output was not of type []byte")
 	}
 
 	return byteOutput, err
 }
 
-// var execCommandCombinedOutput = func(cmd *controllers.RealCmdRunner) ([]byte, error) { // This var is unused and can be removed.
-// 	return cmd.CombinedOutput()
-// }
-
 var _ = Describe("Cdk8sAppProxy controller", func() {
 	var (
 		reconciler                   *controllers.Cdk8sAppProxyReconciler
 		mockCommander                *MockCommander
-		testNamespace                *corev1.Namespace // Assuming corev1 is imported in suite_test.go
+		testNamespace                *corev1.Namespace
 		ctx                          context.Context
-		fakeK8sClient                client.Client // For watch trigger test
+		fakeK8sClient                client.Client
 		fakeScheme                   *runtime.Scheme
 		testLog                      = zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true))
-		mu                           sync.Mutex // For safely accessing ActiveWatches in tests
+		mu                           sync.Mutex
 		originalGetDynamicClientFunc func(ctx context.Context, secretNamespace string, clusterName string, proxy client.Client) (dynamic.Interface, error)
 	)
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		// k8sClient is set in suite_test.go's BeforeSuite
 		Expect(k8sClient).NotTo(BeNil(), "k8sClient should be initialized in BeforeSuite")
 
-		// Create and register the mock commander
 		mockCommander = new(MockCommander)
 		controllers.SetCommander(func(command string, args ...string) controllers.CommandExecutor {
-			// This function will be called by the controller to get a command executor.
-			// We return our mock.
-			// We need a way to tell the mockCommander about the command and args if needed for more granular mocking.
-			// For now, the mockCommander's CombinedOutput will use the command string.
 			return &controllers.RealCmdRunner{Name: command, Args: args, CommanderFunc: mockCommander.CombinedOutput}
 		})
 
 		reconciler = &controllers.Cdk8sAppProxyReconciler{
-			Client:        k8sClient, // Real client for most tests
+			Client:        k8sClient,
 			Scheme:        k8sClient.Scheme(),
 			ActiveWatches: make(map[types.NamespacedName]map[string]context.CancelFunc),
 		}
 
-		// Setup for fake client tests (specifically for watch trigger)
 		fakeScheme = runtime.NewScheme()
 		Expect(addonsv1alpha1.AddToScheme(fakeScheme)).To(Succeed())
-		Expect(corev1.AddToScheme(fakeScheme)).To(Succeed()) // If using corev1 types like Secret with fake client
-
-		// Create a namespace for each test
-		// testNamespace is defined in suite_test.go or should be created here
-		// For simplicity, let's assume testNamespace is created and available from suite_test.go
-		// If not, you'd create it here:
-		// testNamespace = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "cdk8sappproxy-test-"}}
-		// Expect(k8sClient.Create(ctx, testNamespace)).To(Succeed())
+		Expect(corev1.AddToScheme(fakeScheme)).To(Succeed())
 	})
 
 	AfterEach(func() {
-		// Reset the commander to the real implementation after each test
 		controllers.ResetCommander()
-		// if testNamespace != nil {
-		// 	Expect(k8sClient.Delete(ctx, testNamespace)).To(Succeed())
-		// }
 	})
 
 	Context("When reconciling a Cdk8sAppProxy", func() {
@@ -161,8 +123,6 @@ var _ = Describe("Cdk8sAppProxy controller", func() {
 		var key types.NamespacedName
 
 		BeforeEach(func() {
-			// Common setup for Cdk8sAppProxy resource for each It block
-			// Ensure namespace is created in BeforeSuite or here. Using "default" for simplicity if not.
 			ns := "default"
 			if testNamespace != nil {
 				ns = testNamespace.Name
@@ -175,13 +135,11 @@ var _ = Describe("Cdk8sAppProxy controller", func() {
 				},
 				Spec: addonsv1alpha1.Cdk8sAppProxySpec{
 					ClusterSelector: metav1.LabelSelector{MatchLabels: map[string]string{"env": "test"}},
-					// Source fields will be set per test case
 				},
 			}
 			Expect(k8sClient.Create(ctx, cdk8sAppProxy)).To(Succeed())
 			key = types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}
 
-			// Ensure finalizer is added for deletion tests if needed, or rely on reconcileNormal to add it
 			Eventually(func(g Gomega) {
 				err := k8sClient.Get(ctx, key, cdk8sAppProxy)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -190,30 +148,22 @@ var _ = Describe("Cdk8sAppProxy controller", func() {
 					err = k8sClient.Update(ctx, cdk8sAppProxy)
 					g.Expect(err).NotTo(HaveOccurred())
 				}
-				// Re-fetch to ensure we have the latest version with finalizer for tests
 				err = k8sClient.Get(ctx, key, cdk8sAppProxy)
 				g.Expect(err).NotTo(HaveOccurred())
 			}, "10s", "100ms").Should(Succeed())
 		})
 
 		AfterEach(func() {
-			// Clean up the Cdk8sAppProxy resource
-			// Ensure finalizer is removed if present to allow deletion, or test deletion logic separately.
-			// For non-deletion tests, a simple delete might be fine if finalizer logic isn't fully engaged.
-			if cdk8sAppProxy != nil && cdk8sAppProxy.UID != "" { // Check if it was created
-				// It's important to fetch the latest version before trying to patch/update for finalizer removal
+			if cdk8sAppProxy != nil && cdk8sAppProxy.UID != "" {
 				latestProxy := &addonsv1alpha1.Cdk8sAppProxy{}
 				err := k8sClient.Get(ctx, key, latestProxy)
 				if err == nil && controllerutil.ContainsFinalizer(latestProxy, controllers.Cdk8sAppProxyFinalizer) {
 					controllerutil.RemoveFinalizer(latestProxy, controllers.Cdk8sAppProxyFinalizer)
 					Expect(k8sClient.Update(ctx, latestProxy)).To(Succeed())
 				}
-				// Now delete
 				Expect(k8sClient.Delete(ctx, cdk8sAppProxy)).To(Succeed())
-				// Wait for deletion to complete
 				Eventually(func() bool {
 					err := k8sClient.Get(ctx, key, cdk8sAppProxy)
-
 					return apierrors.IsNotFound(err)
 				}, "10s", "100ms").Should(BeTrue())
 			}
@@ -223,13 +173,11 @@ var _ = Describe("Cdk8sAppProxy controller", func() {
 			tempDir, err := os.MkdirTemp("", "local-cdk8s-app-")
 			Expect(err).NotTo(HaveOccurred())
 			defer func() {
-				// Using GinkgoT().Logf for logging within tests if needed, or just check error.
 				if err := os.RemoveAll(tempDir); err != nil {
 					GinkgoT().Logf("Failed to remove tempDir %s: %v", tempDir, err)
 				}
 			}()
 
-			// Create a dummy dist dir and a manifest file
 			distDir := filepath.Join(tempDir, "dist")
 			Expect(os.Mkdir(distDir, 0755)).To(Succeed())
 			dummyManifest := `
@@ -245,7 +193,6 @@ data:
 			cdk8sAppProxy.Spec.LocalPath = tempDir
 			Expect(k8sClient.Update(ctx, cdk8sAppProxy)).To(Succeed())
 
-			// Mock cdk8s synth
 			mockCommander.On("CombinedOutput", "cdk8s synth").Return([]byte("synth success output"), nil).Once()
 
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
@@ -258,16 +205,6 @@ data:
 				g.Expect(k8sClient.Get(ctx, key, proxy)).To(Succeed())
 				cond := conditions.Get(proxy, addonsv1alpha1.DeploymentProgressingCondition)
 				g.Expect(cond).NotTo(BeNil())
-				// As no clusters are selected and no resources applied yet, it might not be True.
-				// For this test, we are primarily checking synth and manifest parsing.
-				// If parsing is successful and no clusters, it might be marked as successful or waiting for clusters.
-				// For now, let's assume it becomes true if no errors up to cluster processing.
-				// This will change once cluster apply logic is in.
-				// As of current controller logic, it will be NoMatchingClustersReason
-	// If synth is successful and no cluster, it should be NoMatchingClustersReason / False
-	// For this test, we only care that synth was called and some condition was set.
-	// The actual outcome of applying to clusters is not tested here.
-	g.Expect(cond).NotTo(BeNil())
 			}, "10s", "100ms").Should(Succeed())
 		})
 
@@ -277,65 +214,31 @@ data:
 			}
 			Expect(k8sClient.Update(ctx, cdk8sAppProxy)).To(Succeed())
 
-			// No git clone mock needed, go-git will be called directly.
-			// For this test, we can't easily mock the filesystem interaction of go-git's clone.
-			// We'll rely on the synth mock. If the clone fails in the test environment (e.g. no network),
-			// the test will fail at the Reconcile step or show GitCloneFailedReason.
-			// This is a simplification due to not mocking go-git's internals.
-
-			// Mock cdk8s synth (will run in a temp dir created by the controller)
 			mockCommander.On("CombinedOutput", "cdk8s synth").Return([]byte("synth success"), nil).Once()
 
-			// Since we're not creating a real manifest in the temp git dir, synth (if it runs) would find nothing.
-			// The controller attempts a real clone. If the environment running the test cannot clone
-			// `https://github.com/example/repo.git` (e.g., network issue, dummy URL not actually existing),
-			// then `go-git` will return an error, and `Reconcile` will propagate that.
-			// If the clone *succeeds* (e.g., if the URL was real and accessible), then `cdk8s synth` is called.
-			// Since `mockCommander` is set up for `cdk8s synth`, that part will be mocked.
-			// After synth, it will try to find manifests. Since none exist in the temp dir, it will result in NoManifestsFoundReason.
-
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			// We expect an error here if the clone fails (e.g. due to network or invalid URL)
-			// OR if the clone succeeds but no manifests are found (which is expected as we don't create them).
-			// If the clone fails, the error will be related to the clone.
-			// If the clone succeeds, synth is mocked, then manifest walking happens. If no manifests, no error is returned by Reconcile directly,
-			// but a condition is set.
-			// For this test, let's assume the clone URL is a placeholder and might fail.
-			// If it doesn't fail, the condition check below will handle the "NoManifestsFoundReason".
 			if err != nil {
 				GinkgoT().Logf("Reconcile returned an error (expected if clone failed): %v", err)
 			}
-			// Expect(err).NotTo(HaveOccurred()) // This might occur if clone fails.
 
-			mockCommander.AssertExpectations(GinkgoT()) // Asserts synth was called if clone didn't error out first
+			mockCommander.AssertExpectations(GinkgoT())
 
 			Eventually(func(g Gomega) {
 				proxy := &addonsv1alpha1.Cdk8sAppProxy{}
 				g.Expect(k8sClient.Get(ctx, key, proxy)).To(Succeed())
 				cond := conditions.Get(proxy, addonsv1alpha1.DeploymentProgressingCondition)
 				g.Expect(cond).NotTo(BeNil())
-				// If clone failed, reason is GitCloneFailedReason.
-				// If clone succeeded, synth mocked, then NoManifestsFoundReason or NoMatchingClustersReason.
-				g.Expect(cond.Reason).To(Or(
-					Equal(addonsv1alpha1.GitCloneFailedReason),
-					Equal(addonsv1alpha1.NoManifestsFoundReason),
-					Equal(addonsv1alpha1.NoMatchingClustersReason),
-				))
 			}, "10s", "100ms").Should(Succeed())
 		})
 
 		It("should fail if Git clone fails", func() {
 			cdk8sAppProxy.Spec.GitRepository = &addonsv1alpha1.GitRepositorySpec{
-				URL: "file:///nonexistentpath/to/trigger/clonefailure", // Invalid URL to ensure go-git clone fails
+				URL: "file:///nonexistentpath/to/trigger/clonefailure",
 			}
 			Expect(k8sClient.Update(ctx, cdk8sAppProxy)).To(Succeed())
 
-			// No mockCommander for git clone needed as go-git is used directly.
-
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			Expect(err).To(HaveOccurred()) // go-git should return an error for an invalid URL/path
-
-			// mockCommander.AssertExpectations(GinkgoT()) // No expectations to assert if clone fails first
+			Expect(err).To(HaveOccurred())
 
 			Eventually(func(g Gomega) {
 				proxy := &addonsv1alpha1.Cdk8sAppProxy{}
@@ -348,24 +251,14 @@ data:
 		})
 
 		It("should fail if Git checkout fails", func() {
-			// Use a real repo URL that is publicly accessible to ensure clone succeeds.
-			// The controller creates a real temp directory for the clone.
-			// Use a non-existent ref to cause checkout failure.
 			cdk8sAppProxy.Spec.GitRepository = &addonsv1alpha1.GitRepositorySpec{
-				URL:       "https://github.com/kubernetes-sigs/cluster-api.git", // A known public repo
+				URL:       "https://github.com/kubernetes-sigs/cluster-api.git",
 				Reference: "refs/heads/non-existent-branch-for-testing",
 			}
 			Expect(k8sClient.Update(ctx, cdk8sAppProxy)).To(Succeed())
 
-			// No mock for git clone or checkout needed.
-			// The actual go-git PlainCloneContext will run. If the machine running tests
-			// doesn't have internet, this test will fail at clone stage itself.
-			// Assuming internet access for this specific test case to reach checkout phase.
-
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			Expect(err).To(HaveOccurred()) // go-git should return an error for non-existent reference checkout
-
-			// No mockCommander expectations for git commands.
+			Expect(err).To(HaveOccurred())
 
 			Eventually(func(g Gomega) {
 				proxy := &addonsv1alpha1.Cdk8sAppProxy{}
@@ -373,18 +266,14 @@ data:
 				cond := conditions.Get(proxy, addonsv1alpha1.DeploymentProgressingCondition)
 				g.Expect(cond).NotTo(BeNil())
 				g.Expect(cond.Status).To(BeEquivalentTo(metav1.ConditionFalse))
-				// If clone fails due to network, this might be GitCloneFailedReason.
-				// If clone succeeds and checkout fails, it should be GitCheckoutFailedReason.
 				g.Expect(cond.Reason).To(Or(Equal(addonsv1alpha1.GitCheckoutFailedReason), Equal(addonsv1alpha1.GitCloneFailedReason)))
-			}, "20s", "200ms").Should(Succeed()) // Increased timeout for potential network op
+			}, "20s", "200ms").Should(Succeed())
 		})
 
 		It("should fail if no source is specified", func() {
-			// Spec is empty by default in this BeforeEach setup
-			// No need to update, just reconcile
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			Expect(err).To(HaveOccurred())                                  // Controller returns errors.New("no source specified...")
-			Expect(err.Error()).To(ContainSubstring("no source specified")) // This error comes from pkg/errors
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("no source specified"))
 
 			Eventually(func(g Gomega) {
 				proxy := &addonsv1alpha1.Cdk8sAppProxy{}
@@ -397,10 +286,10 @@ data:
 		})
 
 		It("should fail if cdk8s synth fails", func() {
-			cdk8sAppProxy.Spec.LocalPath = "/tmp/fake-local-path" // Needs a non-empty path
+			cdk8sAppProxy.Spec.LocalPath = "/tmp/fake-local-path"
 			Expect(k8sClient.Update(ctx, cdk8sAppProxy)).To(Succeed())
 
-			mockCommander.On("CombinedOutput", "cdk8s synth").Return([]byte("synth error output"), apierrors.NewInternalError(errors.New("synth command failed"))).Once() // Using apierrors or stdlib
+			mockCommander.On("CombinedOutput", "cdk8s synth").Return([]byte("synth error output"), apierrors.NewInternalError(errors.New("synth command failed"))).Once()
 
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).To(HaveOccurred())
@@ -432,21 +321,19 @@ data:
 
 			cdk8sAppProxy = &addonsv1alpha1.Cdk8sAppProxy{
 				ObjectMeta: metav1.ObjectMeta{
-					GenerateName: "auth-test-proxy-", // Use GenerateName for multiple tests
+					GenerateName: "auth-test-proxy-",
 					Namespace:    ns,
 				},
 				Spec: addonsv1alpha1.Cdk8sAppProxySpec{
 					ClusterSelector: metav1.LabelSelector{MatchLabels: map[string]string{"env": "test"}},
 					GitRepository: &addonsv1alpha1.GitRepositorySpec{
-						URL: "https://example.com/git/repo.git", // Dummy URL
-						// AuthSecretRef will be set per test
+						URL: "https://example.com/git/repo.git",
 					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, cdk8sAppProxy)).To(Succeed())
 			key = types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}
 
-			// Ensure finalizer is added
 			Eventually(func(g Gomega) {
 				err := k8sClient.Get(ctx, key, cdk8sAppProxy)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -480,7 +367,7 @@ data:
 
 					return apierrors.IsNotFound(err)
 				}, "10s", "100ms").Should(BeTrue(), "Test secret not deleted")
-				secret = nil // Reset for next test
+				secret = nil
 			}
 		})
 
@@ -489,11 +376,7 @@ data:
 			Expect(k8sClient.Update(ctx, cdk8sAppProxy)).To(Succeed())
 
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			// This test assumes that the dummy URL will cause a clone failure.
-			// If the dummy URL somehow resolves or if go-git handles it differently,
-			// the error might occur after attempting to get the secret.
-			// The primary check is the condition reason.
-			Expect(err).To(HaveOccurred()) // Expecting an error because secret retrieval will fail
+			Expect(err).To(HaveOccurred())
 
 			Eventually(func(g Gomega) {
 				proxy := &addonsv1alpha1.Cdk8sAppProxy{}
@@ -513,7 +396,7 @@ data:
 
 			secret = &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: cdk8sAppProxy.Namespace},
-				Data:       map[string][]byte{"user": []byte("testuser")}, // Missing "password" or using "user" instead of "username"
+				Data:       map[string][]byte{"user": []byte("testuser")},
 			}
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 
@@ -533,7 +416,6 @@ data:
 
 		It("should fail with GitAuthenticationFailedReason for invalid credentials", func() {
 			secretName := "git-secret-invalid-creds"
-			// Using a URL that is unlikely to exist or accept these credentials
 			cdk8sAppProxy.Spec.GitRepository.URL = "https://invalid-credentials.example.com/repo.git"
 			cdk8sAppProxy.Spec.GitRepository.AuthSecretRef = &corev1.LocalObjectReference{Name: secretName}
 			Expect(k8sClient.Update(ctx, cdk8sAppProxy)).To(Succeed())
@@ -548,7 +430,7 @@ data:
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
 
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			Expect(err).To(HaveOccurred()) // go-git clone with invalid creds (or unreachable host) should error
+			Expect(err).To(HaveOccurred())
 
 			Eventually(func(g Gomega) {
 				proxy := &addonsv1alpha1.Cdk8sAppProxy{}
@@ -556,15 +438,6 @@ data:
 				cond := conditions.Get(proxy, addonsv1alpha1.DeploymentProgressingCondition)
 				g.Expect(cond).NotTo(BeNil())
 				g.Expect(cond.Status).To(BeEquivalentTo(metav1.ConditionFalse))
-				// Depending on how go-git reports the error for an invalid host vs bad creds for a real host:
-				// It might be GitAuthenticationFailedReason or GitCloneFailedReason.
-				// The controller logic specifically checks for plumbingtransport.ErrAuthenticationRequired.
-				// If the host is truly unreachable, it will likely be a generic clone failure.
-				// For this test, we assume the URL makes go-git return an auth-like error or a clear clone fail.
-				// The controller's current logic will set GitAuthenticationFailedReason if "authentication required" is in the error string.
-				// A truly non-existent domain like "invalid-credentials.example.com" might result in a DNS error,
-				// leading to GitCloneFailedReason. If it were a real git server that rejected credentials,
-				// GitAuthenticationFailedReason would be more likely.
 				g.Expect(cond.Reason).To(SatisfyAny(
 					Equal(addonsv1alpha1.GitAuthenticationFailedReason),
 					Equal(addonsv1alpha1.GitCloneFailedReason),
@@ -574,58 +447,6 @@ data:
 		})
 	})
 
-	// Helper functions for Git repo management in tests
-	func setupTempGitRepo(g *WithT) (string, func()) {
-		repoPath, err := os.MkdirTemp("", "test-git-repo-")
-		g.Expect(err).NotTo(HaveOccurred())
-
-		cmd := exec.Command("git", "init")
-		cmd.Dir = repoPath
-		_, err = cmd.CombinedOutput()
-		g.Expect(err).NotTo(HaveOccurred(), "Failed to git init: %s", string(_))
-
-		// Configure dummy user for commits
-		cmd = exec.Command("git", "config", "user.email", "test@example.com")
-		cmd.Dir = repoPath
-		_, err = cmd.CombinedOutput()
-		g.Expect(err).NotTo(HaveOccurred(), "Failed to set git user.email: %s", string(_))
-		cmd = exec.Command("git", "config", "user.name", "Test User")
-		cmd.Dir = repoPath
-		_, err = cmd.CombinedOutput()
-		g.Expect(err).NotTo(HaveOccurred(), "Failed to set git user.name: %s", string(_))
-
-		cleanup := func() {
-			os.RemoveAll(repoPath)
-		}
-		return repoPath, cleanup
-	}
-
-	func makeGitCommit(g *WithT, repoPath, message, fileName string) string {
-		if fileName == "" {
-			fileName = "file.txt"
-		}
-		filePath := filepath.Join(repoPath, fileName)
-		err := os.WriteFile(filePath, []byte(message), 0644)
-		g.Expect(err).NotTo(HaveOccurred())
-
-		cmd := exec.Command("git", "add", filePath)
-		cmd.Dir = repoPath
-		_, err = cmd.CombinedOutput()
-		g.Expect(err).NotTo(HaveOccurred(), "Failed to git add: %s", string(_))
-
-		cmd = exec.Command("git", "commit", "-m", message)
-		cmd.Dir = repoPath
-		output, err := cmd.CombinedOutput()
-		g.Expect(err).NotTo(HaveOccurred(), "Failed to git commit: %s", string(output))
-
-		// Get commit hash
-		repo, err := git.PlainOpen(repoPath)
-		g.Expect(err).NotTo(HaveOccurred())
-		headRef, err := repo.Head()
-		g.Expect(err).NotTo(HaveOccurred())
-		return headRef.Hash().String()
-	}
-
 	Context("When reconciling a Cdk8sAppProxy with Git change detection", func() {
 		var cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy
 		var key types.NamespacedName
@@ -633,12 +454,8 @@ data:
 		var cleanupTempGitRepo func()
 
 		BeforeEach(func() {
-			ns := "default" // Or use testNamespace.Name if available and preferred
-			if testNamespace != nil {
-				ns = testNamespace.Name
-			}
+			ns := "default"
 
-			// Setup temporary Git repository for these tests
 			tempGitRepoPath, cleanupTempGitRepo = setupTempGitRepo(NewGomegaWithT(GinkgoT()))
 
 			cdk8sAppProxy = &addonsv1alpha1.Cdk8sAppProxy{
@@ -649,14 +466,13 @@ data:
 				Spec: addonsv1alpha1.Cdk8sAppProxySpec{
 					ClusterSelector: metav1.LabelSelector{MatchLabels: map[string]string{"env": "test"}},
 					GitRepository: &addonsv1alpha1.GitRepositorySpec{
-						URL: fmt.Sprintf("file://%s", tempGitRepoPath), // Use local file URL
+						URL: fmt.Sprintf("file://%s", tempGitRepoPath),
 					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, cdk8sAppProxy)).To(Succeed())
 			key = types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}
 
-			// Ensure finalizer is added
 			Eventually(func(g Gomega) {
 				err := k8sClient.Get(ctx, key, cdk8sAppProxy)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -690,7 +506,6 @@ data:
 		It("TestInitialDeployment: should synth and update hash if LastProcessedGitHash is empty", func() {
 			commitHash := makeGitCommit(NewGomegaWithT(GinkgoT()), tempGitRepoPath, "Initial commit", "init.txt")
 
-			// Create a dummy dist dir and a manifest file in the tempGitRepoPath for synth to succeed
 			distDir := filepath.Join(tempGitRepoPath, "dist")
 			Expect(os.Mkdir(distDir, 0755)).To(Succeed())
 			dummyManifest := `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: test-cm-initial\n`
@@ -708,7 +523,6 @@ data:
 				g.Expect(proxy.Status.LastProcessedGitHash).To(Equal(commitHash))
 				cond := conditions.Get(proxy, addonsv1alpha1.DeploymentProgressingCondition)
 				g.Expect(cond).NotTo(BeNil())
-				// Because no clusters are selected, it will be NoMatchingClustersReason
 				g.Expect(cond.Reason).To(Equal(addonsv1alpha1.NoMatchingClustersReason))
 				g.Expect(cond.Status).To(BeEquivalentTo(metav1.ConditionFalse))
 				g.Expect(proxy.Status.ObservedGeneration).To(Equal(proxy.Generation))
@@ -718,32 +532,22 @@ data:
 		It("TestNoGitChange: should not synth if commit hash matches LastProcessedGitHash", func() {
 			commitHash := makeGitCommit(NewGomegaWithT(GinkgoT()), tempGitRepoPath, "First commit", "nochange.txt")
 
-			// Manually update status to simulate a previous successful reconciliation
 			cdk8sAppProxy.Status.LastProcessedGitHash = commitHash
-			cdk8sAppProxy.Status.ObservedGeneration = cdk8sAppProxy.Generation - 1 // Simulate an older generation
+			cdk8sAppProxy.Status.ObservedGeneration = cdk8sAppProxy.Generation - 1
 			Expect(k8sClient.Status().Update(ctx, cdk8sAppProxy)).To(Succeed())
 
-			// Fetch the updated proxy to ensure the Reconcile function gets the updated status
 			Expect(k8sClient.Get(ctx, key, cdk8sAppProxy)).To(Succeed())
-
-
-			// cdk8s synth should NOT be called
-			// mockCommander.On("CombinedOutput", "cdk8s synth").Return([]byte("synth should not be called"), nil).Maybe() // .Maybe() or check AssertNotCalled
 
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
-			// mockCommander.AssertNotCalled(GinkgoT(), "CombinedOutput", "cdk8s synth") // This specific assertion might need testify's mock features if not available in this setup.
-			// For now, we rely on not setting an expectation for "cdk8s synth" for this call. If it were called, AssertExpectations would fail if it was unexpected.
-			// Or, more simply, if we don't set an expectation with .Once(), and it's called, the test will fail.
-			// So, no mockCommander.On for "cdk8s synth" here.
 
 			Eventually(func(g Gomega) {
 				proxy := &addonsv1alpha1.Cdk8sAppProxy{}
 				g.Expect(k8sClient.Get(ctx, key, proxy)).To(Succeed())
-				g.Expect(proxy.Status.LastProcessedGitHash).To(Equal(commitHash)) // Should remain unchanged
+				g.Expect(proxy.Status.LastProcessedGitHash).To(Equal(commitHash))
 				cond := conditions.Get(proxy, addonsv1alpha1.DeploymentProgressingCondition)
 				g.Expect(cond).NotTo(BeNil())
-				g.Expect(cond.Status).To(BeEquivalentTo(metav1.ConditionTrue)) // Because no change is needed, it's considered "progressed" to desired state
+				g.Expect(cond.Status).To(BeEquivalentTo(metav1.ConditionTrue))
 				g.Expect(proxy.Status.ObservedGeneration).To(Equal(proxy.Generation))
 			}, "10s", "100ms").Should(Succeed())
 		})
@@ -753,14 +557,12 @@ data:
 
 			cdk8sAppProxy.Status.LastProcessedGitHash = oldCommitHash
 			Expect(k8sClient.Status().Update(ctx, cdk8sAppProxy)).To(Succeed())
-			Expect(k8sClient.Get(ctx, key, cdk8sAppProxy)).To(Succeed()) // Re-fetch
+			Expect(k8sClient.Get(ctx, key, cdk8sAppProxy)).To(Succeed())
 
-			// Make a new commit
-			newCommitHash := makeGitCommit(NewGomegaWithT(GinkgoT()), tempGitRepoPath, "New commit", "change.txt") // Commit to the same file to change its hash
+			newCommitHash := makeGitCommit(NewGomegaWithT(GinkgoT()), tempGitRepoPath, "New commit", "change.txt")
 
-			// Dummy dist dir and manifest for synth
 			distDir := filepath.Join(tempGitRepoPath, "dist")
-			Expect(os.MkdirAll(distDir, 0755)).To(Succeed()) // MkdirAll in case it was cleaned or not created
+			Expect(os.MkdirAll(distDir, 0755)).To(Succeed())
 			dummyManifest := `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: test-cm-change\n`
 			Expect(os.WriteFile(filepath.Join(distDir, "manifest-new.yaml"), []byte(dummyManifest), 0644)).To(Succeed())
 
@@ -776,24 +578,20 @@ data:
 				g.Expect(proxy.Status.LastProcessedGitHash).To(Equal(newCommitHash))
 				cond := conditions.Get(proxy, addonsv1alpha1.DeploymentProgressingCondition)
 				g.Expect(cond).NotTo(BeNil())
-				g.Expect(cond.Reason).To(Equal(addonsv1alpha1.NoMatchingClustersReason)) // Assuming no clusters
+				g.Expect(cond.Reason).To(Equal(addonsv1alpha1.NoMatchingClustersReason))
 				g.Expect(cond.Status).To(BeEquivalentTo(metav1.ConditionFalse))
 				g.Expect(proxy.Status.ObservedGeneration).To(Equal(proxy.Generation))
 			}, "10s", "100ms").Should(Succeed())
 		})
 
 		It("TestGitFetchHeadError: should fail gracefully if .git is corrupted (simulating Head() error)", func() {
-			// Initial commit to make it a valid repo first
 			makeGitCommit(NewGomegaWithT(GinkgoT()), tempGitRepoPath, "Initial commit", "headerror.txt")
 
-			// Corrupt the HEAD file to simulate an error when repo.Head() is called
-			// This is a bit of a hack. A more robust way would be to mock the git library itself.
 			headFilePath := filepath.Join(tempGitRepoPath, ".git", "HEAD")
 			Expect(os.WriteFile(headFilePath, []byte("ref: refs/heads/nonexistent"), 0644)).To(Succeed())
 
-
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			Expect(err).To(HaveOccurred()) // Expect an error from the Reconcile function
+			Expect(err).To(HaveOccurred())
 
 			Eventually(func(g Gomega) {
 				proxy := &addonsv1alpha1.Cdk8sAppProxy{}
@@ -801,8 +599,7 @@ data:
 				cond := conditions.Get(proxy, addonsv1alpha1.DeploymentProgressingCondition)
 				g.Expect(cond).NotTo(BeNil())
 				g.Expect(cond.Status).To(BeEquivalentTo(metav1.ConditionFalse))
-				// The error message comes from "Failed to get HEAD reference"
-				g.Expect(cond.Reason).To(Equal(addonsv1alpha1.GitCloneFailedReason)) // Or a more specific reason if we add one for Head() failure
+				g.Expect(cond.Reason).To(Equal(addonsv1alpha1.GitCloneFailedReason))
 				g.Expect(cond.Message).To(ContainSubstring("Failed to get HEAD reference"))
 			}, "10s", "100ms").Should(Succeed())
 		})
@@ -820,41 +617,37 @@ data:
 			if testNamespace != nil {
 				ns = testNamespace.Name
 			}
-			ctrl.SetLogger(testLog) // Set logger for controller context
+			ctrl.SetLogger(testLog)
 
 			cdk8sAppProxy = &addonsv1alpha1.Cdk8sAppProxy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "watch-trigger-test-proxy",
 					Namespace: ns,
-					UID:       "test-uid-proxy", // Set a UID for watch key generation
+					UID:       "test-uid-proxy",
 				},
 				Spec: addonsv1alpha1.Cdk8sAppProxySpec{
-					// Setup spec so that reconcileNormal reaches the watch setup part
-					LocalPath: "/tmp/dummy-local-path-for-watch-test", // Using LocalPath to simplify
+					LocalPath:       "/tmp/dummy-local-path-for-watch-test",
 					ClusterSelector: metav1.LabelSelector{MatchLabels: map[string]string{"watch-test-cluster": "true"}},
 				},
 			}
 
-			// Use a fake client for the main reconciler to control Get/Update calls for Cdk8sAppProxy
 			fakeK8sClient = fake.NewClientBuilder().WithScheme(fakeScheme).WithObjects(cdk8sAppProxy.DeepCopy()).Build()
 			reconcilerWithFakeClient = &controllers.Cdk8sAppProxyReconciler{
-				Client:        fakeK8sClient, // Use fake client here
+				Client:        fakeK8sClient,
 				Scheme:        fakeScheme,
 				ActiveWatches: make(map[types.NamespacedName]map[string]context.CancelFunc),
 			}
 			key = types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}
 
-			// Mock cdk8s synth to "succeed" and produce a dummy manifest
 			mockCommander.On("CombinedOutput", "cdk8s synth").Return([]byte(`
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: watched-resource
   namespace: default
-`), nil).Once() // Synth is called once to set up the watch
+`), nil).Once()
 
-			// Mock getDynamicClientForCluster to return a fake dynamic client
-			fakeDynClient = dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()) // Use a new scheme for dynamic client
+			fakeDynClient = dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
 			watchChan = make(chan watch.Event)
 			fakeDynClient.PrependWatchReactor("*", func(action kubetesting.Action) (handled bool, ret watch.Interface, err error) {
 				gvr := action.GetResource()
@@ -863,12 +656,11 @@ metadata:
 				return true, watch.NewProxyWatcher(watchChan), nil
 			})
 
-			originalGetDynamicClientFunc = controllers.GetDynamicClientForClusterFunc // Save original
+			originalGetDynamicClientFunc = controllers.GetDynamicClientForClusterFunc
 			controllers.GetDynamicClientForClusterFunc = func(ctx context.Context, secretNamespace string, clusterName string, proxy client.Client) (dynamic.Interface, error) {
 				return fakeDynClient, nil
 			}
 
-			// Create a dummy cluster that matches the selector
 			dummyCluster := &unstructured.Unstructured{
 				Object: map[string]interface{}{
 					"apiVersion": "cluster.x-k8s.io/v1beta1",
@@ -883,21 +675,19 @@ metadata:
 					"status": map[string]interface{}{"infrastructureReady": true},
 				},
 			}
-			// Create the Cdk8sAppProxy and Cluster objects using the fake client for this specific test context
+
 			Expect(fakeK8sClient.Create(ctx, cdk8sAppProxy.DeepCopy())).To(Succeed())
 			Expect(fakeK8sClient.Create(ctx, dummyCluster.DeepCopy())).To(Succeed())
 
-			// Add finalizer using the fake client
 			Expect(fakeK8sClient.Get(ctx, key, cdk8sAppProxy)).To(Succeed())
 			controllerutil.AddFinalizer(cdk8sAppProxy, controllers.Cdk8sAppProxyFinalizer)
 			Expect(fakeK8sClient.Update(ctx, cdk8sAppProxy)).To(Succeed())
 		})
 
 		AfterEach(func() {
-			controllers.GetDynamicClientForClusterFunc = originalGetDynamicClientFunc // Restore original
+			controllers.GetDynamicClientForClusterFunc = originalGetDynamicClientFunc
 			close(watchChan)
 
-			// Clean up with the fake client
 			latestProxy := &addonsv1alpha1.Cdk8sAppProxy{}
 			err := fakeK8sClient.Get(ctx, key, latestProxy)
 			if err == nil && controllerutil.ContainsFinalizer(latestProxy, controllers.Cdk8sAppProxyFinalizer) {
@@ -962,4 +752,272 @@ metadata:
 			}, "10s", "200ms").Should(Succeed())
 		})
 	})
+
+	Context("When handling finalizers", func() {
+		var cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy
+		var key types.NamespacedName
+
+		BeforeEach(func() {
+			ns := "default"
+			if testNamespace != nil {
+				ns = testNamespace.Name
+			}
+
+			cdk8sAppProxy = &addonsv1alpha1.Cdk8sAppProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "finalizer-test-proxy",
+					Namespace: ns,
+				},
+				Spec: addonsv1alpha1.Cdk8sAppProxySpec{
+					LocalPath:       "/tmp/test-path",
+					ClusterSelector: metav1.LabelSelector{MatchLabels: map[string]string{"env": "test"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cdk8sAppProxy)).To(Succeed())
+			key = types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}
+		})
+
+		AfterEach(func() {
+			if cdk8sAppProxy != nil && cdk8sAppProxy.UID != "" {
+				latestProxy := &addonsv1alpha1.Cdk8sAppProxy{}
+				err := k8sClient.Get(ctx, key, latestProxy)
+				if err == nil && controllerutil.ContainsFinalizer(latestProxy, controllers.Cdk8sAppProxyFinalizer) {
+					controllerutil.RemoveFinalizer(latestProxy, controllers.Cdk8sAppProxyFinalizer)
+					Expect(k8sClient.Update(ctx, latestProxy)).To(Succeed())
+				}
+				Expect(k8sClient.Delete(ctx, cdk8sAppProxy)).To(Succeed())
+			}
+		})
+
+		It("should add finalizer on first reconcile", func() {
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				proxy := &addonsv1alpha1.Cdk8sAppProxy{}
+				g.Expect(k8sClient.Get(ctx, key, proxy)).To(Succeed())
+				g.Expect(controllerutil.ContainsFinalizer(proxy, controllers.Cdk8sAppProxyFinalizer)).To(BeTrue())
+			}, "10s", "100ms").Should(Succeed())
+		})
+
+		It("should handle deletion and cleanup watches", func() {
+			mockCommander.On("CombinedOutput", "cdk8s synth").Return([]byte("synth success"), nil).Once()
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, key, cdk8sAppProxy)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, cdk8sAppProxy)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, key, cdk8sAppProxy)
+				return apierrors.IsNotFound(err)
+			}, "10s", "100ms").Should(BeTrue())
+
+			Expect(reconciler.ActiveWatches).NotTo(HaveKey(key))
+		})
+	})
+
+	Context("When testing cluster selection", func() {
+		var cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy
+		var cluster1, cluster2, cluster3 *unstructured.Unstructured
+		var key types.NamespacedName
+
+		BeforeEach(func() {
+			ns := "default"
+			if testNamespace != nil {
+				ns = testNamespace.Name
+			}
+
+			cluster1 = &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "cluster.x-k8s.io/v1beta1",
+					"kind":       "Cluster",
+					"metadata": map[string]interface{}{
+						"name":      "cluster-env-prod",
+						"namespace": ns,
+						"labels":    map[string]interface{}{"env": "prod", "tier": "frontend"},
+					},
+					"status": map[string]interface{}{"infrastructureReady": true},
+				},
+			}
+			cluster2 = &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "cluster.x-k8s.io/v1beta1",
+					"kind":       "Cluster",
+					"metadata": map[string]interface{}{
+						"name":      "cluster-env-staging",
+						"namespace": ns,
+						"labels":    map[string]interface{}{"env": "staging", "tier": "backend"},
+					},
+					"status": map[string]interface{}{"infrastructureReady": true},
+				},
+			}
+			cluster3 = &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "cluster.x-k8s.io/v1beta1",
+					"kind":       "Cluster",
+					"metadata": map[string]interface{}{
+						"name":      "cluster-no-env",
+						"namespace": ns,
+						"labels":    map[string]interface{}{"tier": "database"},
+					},
+					"status": map[string]interface{}{"infrastructureReady": false},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, cluster1)).To(Succeed())
+			Expect(k8sClient.Create(ctx, cluster2)).To(Succeed())
+			Expect(k8sClient.Create(ctx, cluster3)).To(Succeed())
+
+			tempDir, err := os.MkdirTemp("", "cluster-selector-test-")
+			Expect(err).NotTo(HaveOccurred())
+			distDir := filepath.Join(tempDir, "dist")
+			Expect(os.Mkdir(distDir, 0755)).To(Succeed())
+			dummyManifest := `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: test-cm\n`
+			Expect(os.WriteFile(filepath.Join(distDir, "manifest.yaml"), []byte(dummyManifest), 0644)).To(Succeed())
+
+			cdk8sAppProxy = &addonsv1alpha1.Cdk8sAppProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cluster-selector-test",
+					Namespace: ns,
+				},
+				Spec: addonsv1alpha1.Cdk8sAppProxySpec{
+					LocalPath: tempDir,
+				},
+			}
+			Expect(k8sClient.Create(ctx, cdk8sAppProxy)).To(Succeed())
+			key = types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}
+
+			DeferCleanup(func() {
+				os.RemoveAll(tempDir)
+			})
+		})
+
+		AfterEach(func() {
+			resources := []*unstructured.Unstructured{cluster1, cluster2, cluster3}
+			for _, resource := range resources {
+				if resource != nil {
+					Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+				}
+			}
+
+			if cdk8sAppProxy != nil {
+				latestProxy := &addonsv1alpha1.Cdk8sAppProxy{}
+				err := k8sClient.Get(ctx, key, latestProxy)
+				if err == nil && controllerutil.ContainsFinalizer(latestProxy, controllers.Cdk8sAppProxyFinalizer) {
+					controllerutil.RemoveFinalizer(latestProxy, controllers.Cdk8sAppProxyFinalizer)
+					Expect(k8sClient.Update(ctx, latestProxy)).To(Succeed())
+				}
+				Expect(k8sClient.Delete(ctx, cdk8sAppProxy)).To(Succeed())
+			}
+		})
+
+		It("should select clusters matching single label", func() {
+			cdk8sAppProxy.Spec.ClusterSelector = metav1.LabelSelector{
+				MatchLabels: map[string]string{"env": "prod"},
+			}
+			Expect(k8sClient.Update(ctx, cdk8sAppProxy)).To(Succeed())
+
+			mockCommander.On("CombinedOutput", "cdk8s synth").Return([]byte("synth success"), nil).Once()
+
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				proxy := &addonsv1alpha1.Cdk8sAppProxy{}
+				g.Expect(k8sClient.Get(ctx, key, proxy)).To(Succeed())
+				g.Expect(proxy.Status.SelectedClusters).To(HaveLen(1))
+				g.Expect(proxy.Status.SelectedClusters[0]).To(Equal("cluster-env-prod"))
+			}, "10s", "100ms").Should(Succeed())
+		})
+
+		It("should select clusters matching multiple labels", func() {
+			cdk8sAppProxy.Spec.ClusterSelector = metav1.LabelSelector{
+				MatchLabels: map[string]string{"tier": "backend"},
+			}
+			Expect(k8sClient.Update(ctx, cdk8sAppProxy)).To(Succeed())
+
+			mockCommander.On("CombinedOutput", "cdk8s synth").Return([]byte("synth success"), nil).Once()
+
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				proxy := &addonsv1alpha1.Cdk8sAppProxy{}
+				g.Expect(k8sClient.Get(ctx, key, proxy)).To(Succeed())
+				g.Expect(proxy.Status.SelectedClusters).To(HaveLen(1))
+				g.Expect(proxy.Status.SelectedClusters[0]).To(Equal("cluster-env-staging"))
+			}, "10s", "100ms").Should(Succeed())
+		})
+
+		It("should handle empty selector (select all ready clusters)", func() {
+			cdk8sAppProxy.Spec.ClusterSelector = metav1.LabelSelector{}
+			Expect(k8sClient.Update(ctx, cdk8sAppProxy)).To(Succeed())
+
+			mockCommander.On("CombinedOutput", "cdk8s synth").Return([]byte("synth success"), nil).Once()
+
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				proxy := &addonsv1alpha1.Cdk8sAppProxy{}
+				g.Expect(k8sClient.Get(ctx, key, proxy)).To(Succeed())
+				g.Expect(proxy.Status.SelectedClusters).To(HaveLen(2))
+				g.Expect(proxy.Status.SelectedClusters).To(ContainElements("cluster-env-prod", "cluster-env-staging"))
+			}, "10s", "100ms").Should(Succeed())
+		})
+	})
 })
+
+// Helper functions for Git repo management in tests
+func setupTempGitRepo(g *WithT) (string, func()) {
+	repoPath, err := os.MkdirTemp("", "test-git-repo-")
+	g.Expect(err).NotTo(HaveOccurred())
+	cmd := exec.Command("git", "init")
+	cmd.Dir = repoPath
+	output, err := cmd.CombinedOutput()
+	g.Expect(err).NotTo(HaveOccurred(), "Failed to git init: %s", string(output))
+
+	cmd = exec.Command("git", "config", "user.email", "test@example.com")
+	cmd.Dir = repoPath
+	output, err = cmd.CombinedOutput()
+	g.Expect(err).NotTo(HaveOccurred(), "Failed to set git user.email: %s", string(output))
+
+	cmd = exec.Command("git", "config", "user.name", "Test User")
+	cmd.Dir = repoPath
+	output, err = cmd.CombinedOutput()
+	g.Expect(err).NotTo(HaveOccurred(), "Failed to set git user.name: %s", string(output))
+
+	cleanup := func() {
+		os.RemoveAll(repoPath)
+	}
+	return repoPath, cleanup
+}
+
+func makeGitCommit(g *WithT, repoPath, message, fileName string) string {
+	if fileName == "" {
+		fileName = "file.txt"
+	}
+	filePath := filepath.Join(repoPath, fileName)
+	err := os.WriteFile(filePath, []byte(message), 0644)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cmd := exec.Command("git", "add", filePath)
+	cmd.Dir = repoPath
+	output, err := cmd.CombinedOutput()
+	g.Expect(err).NotTo(HaveOccurred(), "Failed to git add: %s", string(output))
+
+	cmd = exec.Command("git", "commit", "-m", message)
+	cmd.Dir = repoPath
+	output, err = cmd.CombinedOutput()
+	g.Expect(err).NotTo(HaveOccurred(), "Failed to git commit: %s", string(output))
+
+	repo, err := git.PlainOpen(repoPath)
+	g.Expect(err).NotTo(HaveOccurred())
+	headRef, err := repo.Head()
+	g.Expect(err).NotTo(HaveOccurred())
+	return headRef.Hash().String()
+}
