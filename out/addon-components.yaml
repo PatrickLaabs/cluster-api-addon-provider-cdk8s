@@ -504,7 +504,7 @@ spec:
           value: /tmp/xdg
         - name: KUBECACHEDIR
           value: /tmp/.kube/cache
-        image: ghcr.io/patricklaabs/cluster-api-addon-provider-cdk8s/cluster-api-cdk8s-controller:v0.2.0-alpha
+        image: ghcr.io/patricklaabs/cluster-api-addon-provider-cdk8s/cluster-api-cdk8s-controller:v0.2.1-alpha
         imagePullPolicy: Always
         livenessProbe:
           httpGet:
