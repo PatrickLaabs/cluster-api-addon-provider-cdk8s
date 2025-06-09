@@ -1,10 +1,9 @@
 package v1alpha1
 
 import (
-	"context"
 	"fmt"
 
-	"k8s.io/apimachinery/pkg/runtime"
+	runtime "k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -22,10 +21,11 @@ func (r *Cdk8sAppProxy) SetupWebhookWithManager(mgr ctrl.Manager) error {
 
 // +kubebuilder:webhook:path=/mutate-addons-cluster-x-k8s-io-v1alpha1-cdk8sappproxy,mutating=true,failurePolicy=fail,sideEffects=None,groups=addons.cluster.x-k8s.io,resources=cdk8sappproxies,verbs=create;update,versions=v1alpha1,name=cdk8sappproxy.kb.io,admissionReviewVersions=v1
 
-var _ webhook.CustomDefaulter = &Cdk8sAppProxy{}
+// var _ webhook.CustomDefaulter = &Cdk8sAppProxy{}
+var _ webhook.Defaulter = &Cdk8sAppProxy{}
 
 // Default implements webhook.CustomDefaulter so a webhook will be registered for the type
-func (r *Cdk8sAppProxy) Default(ctx context.Context, obj runtime.Object) error {
+func (r *Cdk8sAppProxy) Default() {
 	cdk8sappproxylog.Info("default", "name", r.Name)
 
 	// Set default git reference if not specified
@@ -37,30 +37,28 @@ func (r *Cdk8sAppProxy) Default(ctx context.Context, obj runtime.Object) error {
 	if r.Spec.GitRepository != nil && r.Spec.GitRepository.Path == "" {
 		r.Spec.GitRepository.Path = "."
 	}
-
-	return nil
 }
 
 // +kubebuilder:webhook:path=/validate-addons-cluster-x-k8s-io-v1alpha1-cdk8sappproxy,mutating=false,failurePolicy=fail,sideEffects=None,groups=addons.cluster.x-k8s.io,resources=cdk8sappproxies,verbs=create;update,versions=v1alpha1,name=cdk8sappproxy.kb.io,admissionReviewVersions=v1
 
-var _ webhook.CustomValidator = &Cdk8sAppProxy{}
+var _ webhook.Validator = &Cdk8sAppProxy{}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type
-func (r *Cdk8sAppProxy) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (r *Cdk8sAppProxy) ValidateCreate() (admission.Warnings, error) {
 	cdk8sappproxylog.Info("validate create", "name", r.Name)
 
 	return r.validateCdk8sAppProxy()
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type
-func (r *Cdk8sAppProxy) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+func (r *Cdk8sAppProxy) ValidateUpdate(oldRaw runtime.Object) (admission.Warnings, error) {
 	cdk8sappproxylog.Info("validate update", "name", r.Name)
 
 	return r.validateCdk8sAppProxy()
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type
-func (r *Cdk8sAppProxy) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (r *Cdk8sAppProxy) ValidateDelete() (admission.Warnings, error) {
 	cdk8sappproxylog.Info("validate delete", "name", r.Name)
 
 	// No validation needed for delete

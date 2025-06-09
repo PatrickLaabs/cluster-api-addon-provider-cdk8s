@@ -37,6 +37,7 @@ import (
 	_ "k8s.io/component-base/logs/json/register"
 	"k8s.io/klog/v2"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	"sigs.k8s.io/cluster-api/controllers/remote"
 	kcpv1 "sigs.k8s.io/cluster-api/controlplane/kubeadm/api/v1beta1"
 	"sigs.k8s.io/cluster-api/feature"
 	"sigs.k8s.io/cluster-api/util/apiwarnings"
@@ -49,8 +50,9 @@ import (
 )
 
 var (
-	scheme   = runtime.NewScheme()
-	setupLog = ctrl.Log.WithName("setup")
+	controllerName = "cluster-api-cdk8s-controller-manager"
+	scheme         = runtime.NewScheme()
+	setupLog       = ctrl.Log.WithName("setup")
 
 	enableLeaderElection        bool
 	leaderElectionLeaseDuration time.Duration
@@ -167,13 +169,13 @@ func main() {
 	restConfig := ctrl.GetConfigOrDie()
 	restConfig.QPS = restConfigQPS
 	restConfig.Burst = restConfigBurst
-	// restConfig.UserAgent = remote.DefaultClusterAPIUserAgent(controllerName) // controllerName was removed
+	restConfig.UserAgent = remote.DefaultClusterAPIUserAgent(controllerName)
 	restConfig.WarningHandler = apiwarnings.DefaultHandler(klog.Background().WithName("API Server Warning"))
 
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "controller-leader-election-capcdk8s",
+		LeaderElectionID:       "controller-leader-election-caapc",
 		LeaseDuration:          &leaderElectionLeaseDuration,
 		RenewDeadline:          &leaderElectionRenewDeadline,
 		HealthProbeBindAddress: healthAddr,
@@ -207,17 +209,17 @@ func main() {
 	if err = (&controllers.Cdk8sAppProxyReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
-		Recorder:      mgr.GetEventRecorderFor("cdk8sappproxy-controller"), // Enabled
+		Recorder:      mgr.GetEventRecorderFor("cdk8sappproxy-controller"),
 		ActiveWatches: make(map[types.NamespacedName]map[string]context.CancelFunc),
 	}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: cdk8sAppProxyConcurrency}); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Cdk8sAppProxy")
 		os.Exit(1)
 	}
-
 	if err = (&addonsv1alpha1.Cdk8sAppProxy{}).SetupWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "Cdk8sAppProxy")
 		os.Exit(1)
 	}
+	//+kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
