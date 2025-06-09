@@ -47,20 +47,14 @@ apiVersion: addons.cluster.x-k8s.io/v1alpha1
 kind: Cdk8sAppProxy
 metadata:
   name: cdk8s-sample-app
-  namespace: default
+  namespace: caapc-system
 spec:
-  gitRepository: # Specifies the Git repository for the cdk8s app
+  gitRepository:
     url: https://github.com/PatrickLaabs/cdk8s-sample-deployment
     # reference: main # Optional: specify a branch, tag, or commit
-  # localPath: "/path/to/local/cdk8s-app" # Alternatively, specify a local path
-  values: |
-    replicaCount: 3
-    image:
-      repository: nginx
-      tag: stable
+    # path: "" # Optional: specify a path within the repository if cdk8s app is not at root
   clusterSelector:
-    matchLabels:
-      environment: development
+    matchLabels: {}
 ```
 
 ### Cdk8sAppProxySpec Fields
