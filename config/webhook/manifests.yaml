@@ -10,7 +10,7 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /mutate-addons-cluster-x-k8s-io-v1alpha1-Cdk8sappproxy
+      path: /mutate-addons-cluster-x-k8s-io-v1alpha1-cdk8sappproxy
   failurePolicy: Fail
   name: cdn8sappproxy.kb.io
   rules:
