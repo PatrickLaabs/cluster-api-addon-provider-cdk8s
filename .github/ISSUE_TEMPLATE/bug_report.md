@@ -21,7 +21,7 @@ assignees: ''
 **Environment:**
 
 - Cluster API version:
-- Cluster API Add-on Provider for Helm version:
+- Cluster API Add-on Provider for cdk8s version:
 - minikube/kind version:
 - Kubernetes version: (use `kubectl version`):
 - OS (e.g. from `/etc/os-release`):
