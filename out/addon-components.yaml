@@ -631,7 +631,7 @@ webhooks:
       namespace: caapc-system
       path: /validate-addons-cluster-x-k8s-io-v1alpha1-cdk8sappproxy
   failurePolicy: Fail
-  name: vcdk8sappproxy.kb.io
+  name: cdk8sappproxy.kb.io
   rules:
   - apiGroups:
     - addons.cluster.x-k8s.io
