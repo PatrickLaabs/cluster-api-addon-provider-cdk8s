@@ -34,7 +34,3 @@ var (
 	// AddToScheme adds the types in this group-version to the given scheme.
 	AddToScheme = SchemeBuilder.AddToScheme
 )
-
-func init() {
-	SchemeBuilder.Register(&Cdk8sAppProxy{}, &Cdk8sAppProxyList{})
-}
