@@ -504,8 +504,8 @@ spec:
           value: /tmp/xdg
         - name: KUBECACHEDIR
           value: /tmp/.kube/cache
-        image: ghcr.io/patricklaabs/cluster-api-addon-provider-cdk8s/cluster-api-cdk8s-controller:dev-0.1.20
-        imagePullPolicy: IfNotPresent
+        image: ghcr.io/patricklaabs/cluster-api-addon-provider-cdk8s/cluster-api-cdk8s-controller:v0.2.0-alpha
+        imagePullPolicy: Always
         livenessProbe:
           httpGet:
             path: /healthz
