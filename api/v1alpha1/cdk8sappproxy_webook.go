@@ -21,10 +21,10 @@ func (r *Cdk8sAppProxy) SetupWebhookWithManager(mgr ctrl.Manager) error {
 
 // +kubebuilder:webhook:path=/mutate-addons-cluster-x-k8s-io-v1alpha1-cdk8sappproxy,mutating=true,failurePolicy=fail,sideEffects=None,groups=addons.cluster.x-k8s.io,resources=cdk8sappproxies,verbs=create;update,versions=v1alpha1,name=cdk8sappproxy.kb.io,admissionReviewVersions=v1
 
-// var _ webhook.CustomDefaulter = &Cdk8sAppProxy{}
+// var _ webhook.CustomDefaulter = &Cdk8sAppProxy{}.
 var _ webhook.Defaulter = &Cdk8sAppProxy{}
 
-// Default implements webhook.CustomDefaulter so a webhook will be registered for the type
+// Default implements webhook.CustomDefaulter so a webhook will be registered for the type.
 func (r *Cdk8sAppProxy) Default() {
 	cdk8sappproxylog.Info("default", "name", r.Name)
 
@@ -43,21 +43,21 @@ func (r *Cdk8sAppProxy) Default() {
 
 var _ webhook.Validator = &Cdk8sAppProxy{}
 
-// ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type
+// ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type.
 func (r *Cdk8sAppProxy) ValidateCreate() (admission.Warnings, error) {
 	cdk8sappproxylog.Info("validate create", "name", r.Name)
 
 	return r.validateCdk8sAppProxy()
 }
 
-// ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type
+// ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type.
 func (r *Cdk8sAppProxy) ValidateUpdate(oldRaw runtime.Object) (admission.Warnings, error) {
 	cdk8sappproxylog.Info("validate update", "name", r.Name)
 
 	return r.validateCdk8sAppProxy()
 }
 
-// ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type
+// ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type.
 func (r *Cdk8sAppProxy) ValidateDelete() (admission.Warnings, error) {
 	cdk8sappproxylog.Info("validate delete", "name", r.Name)
 

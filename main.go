@@ -24,7 +24,7 @@ import (
 	"time"
 
 	addonsv1alpha1 "github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/api/v1alpha1"
-	"github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/controllers"
+	caapccontroller "github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/controllers/cdk8sappproxy"
 	"github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/version"
 	"github.com/spf13/pflag"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -206,7 +206,7 @@ func main() {
 
 	ctx := ctrl.SetupSignalHandler()
 
-	if err = (&controllers.Cdk8sAppProxyReconciler{
+	if err = (&caapccontroller.Cdk8sAppProxyReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
 		Recorder:      mgr.GetEventRecorderFor("cdk8sappproxy-controller"),

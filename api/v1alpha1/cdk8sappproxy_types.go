@@ -41,7 +41,7 @@ type GitRepositorySpec struct {
 	// containing authentication credentials for the Git repository.
 	// The secret must contain 'username' and 'password' fields.
 	// +kubebuilder:validation:Optional
-	AuthSecretRef *corev1.LocalObjectReference `json:"authSecretRef,omitempty"` // New field
+	AuthSecretRef *corev1.LocalObjectReference `json:"authSecretRef,omitempty"`
 }
 
 // Cdk8sAppProxySpec defines the desired state of Cdk8sAppProxy.

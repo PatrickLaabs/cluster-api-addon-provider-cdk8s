@@ -23,7 +23,7 @@ import (
 	"testing"
 
 	addonsv1alpha1 "github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/api/v1alpha1"
-	"github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/controllers"
+	caapccontroller "github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/controllers/cdk8sappproxy"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -32,7 +32,7 @@ import (
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller" // Added for controller.Options
+	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -49,26 +49,11 @@ var (
 	cancel     context.CancelFunc
 )
 
-// const ( // Unused constants
-// 	timeout  = time.Second * 10
-// 	interval = time.Millisecond * 250
-// )
-
 func TestControllers(t *testing.T) {
 	RegisterFailHandler(Fail)
 
 	RunSpecs(t, "Controller Suite")
 }
-
-// Removed TestReporter struct and its methods as gomock is no longer used here
-// var _ gomock.TestReporter = (*TestReporter)(nil)
-// type TestReporter struct{}
-// func (c TestReporter) Errorf(format string, args ...any) {
-// 	panic(fmt.Sprintf(format, args...))
-// }
-// func (c TestReporter) Fatalf(format string, args ...any) {
-// 	panic(fmt.Sprintf(format, args...))
-// }
 
 var _ = BeforeSuite(func() {
 	ctx, cancel = context.WithCancel(context.TODO())
@@ -103,11 +88,6 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
 
-	// Remove namespace creation if it's specific to Helm tests
-	// for _, namespace := range namespaces {
-	// 	Expect(k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})).NotTo(HaveOccurred())
-	// }
-
 	k8sManager, err = ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: scheme.Scheme,
 		Metrics: metricsserver.Options{
@@ -116,13 +96,13 @@ var _ = BeforeSuite(func() {
 		HealthProbeBindAddress: "0",
 	})
 	Expect(err).NotTo(HaveOccurred())
-	Expect(k8sClient).NotTo(BeNil()) // k8sManager was already checked
+	Expect(k8sClient).NotTo(BeNil())
 
 	// Setup Cdk8sAppProxyReconciler
-	err = (&controllers.Cdk8sAppProxyReconciler{ // Added 'controllers.' qualifier
+	err = (&caapccontroller.Cdk8sAppProxyReconciler{
 		Client: k8sManager.GetClient(),
 		Scheme: k8sManager.GetScheme(),
-	}).SetupWithManager(k8sManager, crcontroller.Options{}) // Use crcontroller.Options{}
+	}).SetupWithManager(k8sManager, crcontroller.Options{})
 	Expect(err).ToNot(HaveOccurred())
 
 	go func() {

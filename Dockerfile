@@ -28,7 +28,7 @@ ARG ARCH
 # It's an invalid finding since the image is explicitly set in the Makefile.
 # https://github.com/hadolint/hadolint/wiki/DL3006
 # hadolint ignore=DL3006
-FROM ${builder_image} as builder
+FROM ${builder_image} AS builder
 WORKDIR /workspace
 
 # Run this with docker build --build-arg goproxy=$(go env GOPROXY) to override the goproxy
@@ -71,34 +71,31 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # Production image
 FROM ${deployment_base_image}:${deployment_base_image_tag}
 
+# Set shell with pipefail option for better error handling
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # Install Node.js and cdk8s-cli directly
+# hadolint ignore=DL3015
 RUN apt-get update && \
-    apt-get install -y ca-certificates curl wget && \
+    apt-get install -y --no-install-recommends ca-certificates=20240203~22.04.1 curl=7.81.0-1ubuntu1.20 && \
     curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
-    apt-get install -y nodejs && \
-    npm install -g cdk8s-cli && \
-    wget https://go.dev/dl/go1.21.5.linux-amd64.tar.gz && \
-    tar -C /usr/local -xzf go1.21.5.linux-amd64.tar.gz && \
-    rm go1.21.5.linux-amd64.tar.gz && \
+    apt-get install -y nodejs=18.19.1-1nodesource1 && \
+    npm install -g cdk8s-cli@2.200.96 && \
+    curl -fsSL -o go1.24.4.linux-amd64.tar.gz https://go.dev/dl/go1.24.4.linux-amd64.tar.gz && \
+    tar -C /usr/local -xzf go1.24.4.linux-amd64.tar.gz && \
+    rm go1.24.4.linux-amd64.tar.gz && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-    # Set Go environment variables
+# Set Go environment variables
 ENV PATH=$PATH:/usr/local/go/bin
 ENV GOROOT=/usr/local/go
-
-RUN cdk8s --version && go version
 
 WORKDIR /
 COPY --from=builder /workspace/manager .
 
 # Create non-root user
 RUN useradd --uid 65532 --create-home --shell /bin/bash nonroot
-
-# Ensure the non-root user can access Go by setting up their environment
-RUN echo 'export PATH=$PATH:/usr/local/go/bin' >> /home/nonroot/.bashrc && \
-    echo 'export GOROOT=/usr/local/go' >> /home/nonroot/.bashrc && \
-    echo 'export PATH=$PATH:/usr/local/go/bin' >> /home/nonroot/.profile
    
 # Switch back to non-root user (this line should already exist)
 # USER root # This was part of the removed direct install, ensure it's not re-added here unless needed for COPY permissions
