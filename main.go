@@ -206,7 +206,7 @@ func main() {
 
 	ctx := ctrl.SetupSignalHandler()
 
-	if err = (&caapccontroller.Cdk8sAppProxyReconciler{
+	if err = (&caapccontroller.Reconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
 		Recorder:      mgr.GetEventRecorderFor("cdk8sappproxy-controller"),

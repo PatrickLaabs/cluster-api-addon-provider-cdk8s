@@ -99,7 +99,7 @@ var _ = BeforeSuite(func() {
 	Expect(k8sClient).NotTo(BeNil())
 
 	// Setup Cdk8sAppProxyReconciler
-	err = (&caapccontroller.Cdk8sAppProxyReconciler{
+	err = (&caapccontroller.Reconciler{
 		Client: k8sManager.GetClient(),
 		Scheme: k8sManager.GetScheme(),
 	}).SetupWithManager(k8sManager, crcontroller.Options{})

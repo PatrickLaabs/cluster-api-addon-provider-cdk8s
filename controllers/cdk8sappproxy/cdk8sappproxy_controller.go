@@ -31,7 +31,6 @@ import (
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	plumbingtransport "github.com/go-git/go-git/v5/plumbing/transport"
-	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
@@ -46,7 +45,6 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/tools/record"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -95,20 +93,8 @@ var cmdRunnerFactory = func(name string, args ...string) CommandExecutor {
 	return &RealCmdRunner{Name: name, Args: args}
 }
 
-// SetCommander allows tests to override the command runner.
-func SetCommander(factory func(name string, args ...string) CommandExecutor) {
-	cmdRunnerFactory = factory
-}
-
-// ResetCommander resets the command runner to the default real implementation.
-func ResetCommander() {
-	cmdRunnerFactory = func(name string, args ...string) CommandExecutor {
-		return &RealCmdRunner{Name: name, Args: args}
-	}
-}
-
 // pollGitRepository periodically checks the remote git repository for changes.
-func (r *Cdk8sAppProxyReconciler) pollGitRepository(ctx context.Context, proxyName types.NamespacedName) {
+func (r *Reconciler) pollGitRepository(ctx context.Context, proxyName types.NamespacedName) {
 	logger := log.FromContext(ctx).WithValues("cdk8sappproxy", proxyName.String(), "goroutine", "pollGitRepository")
 	logger.Info("Starting git repository polling loop")
 
@@ -129,7 +115,7 @@ func (r *Cdk8sAppProxyReconciler) pollGitRepository(ctx context.Context, proxyNa
 	}
 }
 
-func (r *Cdk8sAppProxyReconciler) pollGitRepositoryOnce(ctx context.Context, proxyName types.NamespacedName, logger logr.Logger) error {
+func (r *Reconciler) pollGitRepositoryOnce(ctx context.Context, proxyName types.NamespacedName, logger logr.Logger) error {
 	logger.Info("Polling git repository for changes")
 
 	cdk8sAppProxy, err := r.getCdk8sAppProxyForPolling(ctx, proxyName)
@@ -158,7 +144,7 @@ func (r *Cdk8sAppProxyReconciler) pollGitRepositoryOnce(ctx context.Context, pro
 	return r.handleGitRepositoryChange(ctx, proxyName, cdk8sAppProxy, remoteCommitHash, logger)
 }
 
-func (r *Cdk8sAppProxyReconciler) getCdk8sAppProxyForPolling(ctx context.Context, proxyName types.NamespacedName) (*addonsv1alpha1.Cdk8sAppProxy, error) {
+func (r *Reconciler) getCdk8sAppProxyForPolling(ctx context.Context, proxyName types.NamespacedName) (*addonsv1alpha1.Cdk8sAppProxy, error) {
 	cdk8sAppProxy := &addonsv1alpha1.Cdk8sAppProxy{}
 	if err := r.Get(ctx, proxyName, cdk8sAppProxy); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -171,7 +157,7 @@ func (r *Cdk8sAppProxyReconciler) getCdk8sAppProxyForPolling(ctx context.Context
 	return cdk8sAppProxy, nil
 }
 
-func (r *Cdk8sAppProxyReconciler) isGitRepositoryConfigured(cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) bool {
+func (r *Reconciler) isGitRepositoryConfigured(cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) bool {
 	if cdk8sAppProxy.Spec.GitRepository == nil || cdk8sAppProxy.Spec.GitRepository.URL == "" {
 		logger.Info("GitRepository not configured for this Cdk8sAppProxy, stopping polling.")
 
@@ -181,7 +167,7 @@ func (r *Cdk8sAppProxyReconciler) isGitRepositoryConfigured(cdk8sAppProxy *addon
 	return true
 }
 
-func (r *Cdk8sAppProxyReconciler) determineGitReference(gitSpec *addonsv1alpha1.GitRepositorySpec, logger logr.Logger) plumbing.ReferenceName {
+func (r *Reconciler) determineGitReference(gitSpec *addonsv1alpha1.GitRepositorySpec, logger logr.Logger) plumbing.ReferenceName {
 	refName := plumbing.HEAD
 	if gitSpec.Reference == "" {
 		return refName
@@ -203,14 +189,14 @@ func (r *Cdk8sAppProxyReconciler) determineGitReference(gitSpec *addonsv1alpha1.
 	return refName
 }
 
-func (r *Cdk8sAppProxyReconciler) fetchRemoteCommitHash(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, gitSpec *addonsv1alpha1.GitRepositorySpec, refName plumbing.ReferenceName, logger logr.Logger) (string, error) {
+func (r *Reconciler) fetchRemoteCommitHash(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, gitSpec *addonsv1alpha1.GitRepositorySpec, refName plumbing.ReferenceName, logger logr.Logger) (string, error) {
 	logger.Info("Attempting to LsRemote", "url", gitSpec.URL, "refName", refName.String())
 
 	rem := git.NewRemote(memory.NewStorage(), &config.RemoteConfig{
 		URLs: []string{gitSpec.URL},
 	})
 
-	auth, err := r.getGitAuthForPolling(ctx, cdk8sAppProxy, gitSpec, logger)
+	auth, err := r.getGitAuth(ctx, cdk8sAppProxy, gitSpec.AuthSecretRef, logger, "fetchRemoteCommitHash")
 	if err != nil {
 		return "", err
 	}
@@ -228,37 +214,7 @@ func (r *Cdk8sAppProxyReconciler) fetchRemoteCommitHash(ctx context.Context, cdk
 	return r.findRemoteCommitHash(refs, refName, logger)
 }
 
-func (r *Cdk8sAppProxyReconciler) getGitAuthForPolling(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, gitSpec *addonsv1alpha1.GitRepositorySpec, logger logr.Logger) (*http.BasicAuth, error) {
-	auth := &http.BasicAuth{}
-	if gitSpec.AuthSecretRef == nil {
-		return auth, nil
-	}
-
-	secret := &corev1.Secret{}
-	secretKey := client.ObjectKey{Namespace: cdk8sAppProxy.Namespace, Name: gitSpec.AuthSecretRef.Name}
-	if err := r.Get(ctx, secretKey, secret); err != nil {
-		logger.Error(err, "Failed to get auth secret for LsRemote")
-
-		return nil, err
-	}
-
-	username, userOk := secret.Data["username"]
-	password, passOk := secret.Data["password"]
-	if !userOk || !passOk {
-		err := errors.New("auth secret missing username or password")
-		logger.Error(err, "secretName", secretKey.String())
-
-		return nil, err
-	}
-
-	auth.Username = string(username)
-	auth.Password = string(password)
-	logger.Info("Using credentials from AuthSecretRef for LsRemote")
-
-	return auth, nil
-}
-
-func (r *Cdk8sAppProxyReconciler) findRemoteCommitHash(refs []*plumbing.Reference, refName plumbing.ReferenceName, logger logr.Logger) (string, error) {
+func (r *Reconciler) findRemoteCommitHash(refs []*plumbing.Reference, refName plumbing.ReferenceName, logger logr.Logger) (string, error) {
 	var remoteCommitHash string
 	foundRef := false
 
@@ -291,7 +247,7 @@ func (r *Cdk8sAppProxyReconciler) findRemoteCommitHash(refs []*plumbing.Referenc
 	return remoteCommitHash, nil
 }
 
-func (r *Cdk8sAppProxyReconciler) tryFindDefaultBranch(refs []*plumbing.Reference, refName plumbing.ReferenceName, logger logr.Logger) (bool, string) {
+func (r *Reconciler) tryFindDefaultBranch(refs []*plumbing.Reference, refName plumbing.ReferenceName, logger logr.Logger) (bool, string) {
 	if refName != plumbing.HEAD {
 		return false, ""
 	}
@@ -316,7 +272,7 @@ func (r *Cdk8sAppProxyReconciler) tryFindDefaultBranch(refs []*plumbing.Referenc
 	return false, ""
 }
 
-func (r *Cdk8sAppProxyReconciler) handleGitRepositoryChange(ctx context.Context, proxyName types.NamespacedName, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, remoteCommitHash string, logger logr.Logger) error {
+func (r *Reconciler) handleGitRepositoryChange(ctx context.Context, proxyName types.NamespacedName, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, remoteCommitHash string, logger logr.Logger) error {
 	if cdk8sAppProxy.Status.LastRemoteGitHash == remoteCommitHash {
 		logger.Info("No change detected in remote git repository.", "currentRemoteHash", remoteCommitHash)
 
@@ -332,7 +288,7 @@ func (r *Cdk8sAppProxyReconciler) handleGitRepositoryChange(ctx context.Context,
 	return r.triggerReconciliation(ctx, proxyName, logger)
 }
 
-func (r *Cdk8sAppProxyReconciler) updateRemoteGitHashStatus(ctx context.Context, proxyName types.NamespacedName, remoteCommitHash string, logger logr.Logger) error {
+func (r *Reconciler) updateRemoteGitHashStatus(ctx context.Context, proxyName types.NamespacedName, remoteCommitHash string, logger logr.Logger) error {
 	latestCdk8sAppProxy := &addonsv1alpha1.Cdk8sAppProxy{}
 	if err := r.Get(ctx, proxyName, latestCdk8sAppProxy); err != nil {
 		logger.Error(err, "Failed to get latest Cdk8sAppProxy before status update")
@@ -352,7 +308,7 @@ func (r *Cdk8sAppProxyReconciler) updateRemoteGitHashStatus(ctx context.Context,
 	return nil
 }
 
-func (r *Cdk8sAppProxyReconciler) triggerReconciliation(ctx context.Context, proxyName types.NamespacedName, logger logr.Logger) error {
+func (r *Reconciler) triggerReconciliation(ctx context.Context, proxyName types.NamespacedName, logger logr.Logger) error {
 	proxyToAnnotate := &addonsv1alpha1.Cdk8sAppProxy{}
 	if err := r.Get(ctx, proxyName, proxyToAnnotate); err != nil {
 		logger.Error(err, "Failed to get latest Cdk8sAppProxy for annotation update")
@@ -374,24 +330,6 @@ func (r *Cdk8sAppProxyReconciler) triggerReconciliation(ctx context.Context, pro
 	logger.Info("Successfully updated annotations to trigger reconciliation.")
 
 	return nil
-}
-
-const Cdk8sAppProxyFinalizer = "cdk8sappproxy.addons.cluster.x-k8s.io/finalizer"
-
-// Cdk8sAppProxyReconciler reconciles a Cdk8sAppProxy object.
-type Cdk8sAppProxyReconciler struct {
-	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder // Add this line
-	// Log      logr.Logger // Logger is available from context
-	ActiveWatches    map[types.NamespacedName]map[string]context.CancelFunc
-	activeGitPollers map[types.NamespacedName]context.CancelFunc
-}
-
-// gitProgressLogger buffers git progress messages and logs them line by line.
-type gitProgressLogger struct {
-	logger logr.Logger
-	buffer []byte
 }
 
 // Write implements the io.Writer interface.
@@ -442,7 +380,7 @@ func checkIfResourceExists(ctx context.Context, dynClient dynamic.Interface, gvr
 	return true, nil
 }
 
-func (r *Cdk8sAppProxyReconciler) stopGitPoller(proxyNamespacedName types.NamespacedName, logger logr.Logger) {
+func (r *Reconciler) stopGitPoller(proxyNamespacedName types.NamespacedName, logger logr.Logger) {
 	if cancel, ok := r.activeGitPollers[proxyNamespacedName]; ok {
 		logger.Info("Stopping git poller due to resource deletion.")
 		cancel()
@@ -450,7 +388,7 @@ func (r *Cdk8sAppProxyReconciler) stopGitPoller(proxyNamespacedName types.Namesp
 	}
 }
 
-func (r *Cdk8sAppProxyReconciler) prepareSourceForDeletion(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (string, func(), error) {
+func (r *Reconciler) prepareSourceForDeletion(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (string, func(), error) {
 	if cdk8sAppProxy.Spec.GitRepository != nil && cdk8sAppProxy.Spec.GitRepository.URL != "" {
 		return r.prepareGitSourceForDeletion(ctx, cdk8sAppProxy, logger)
 	} else if cdk8sAppProxy.Spec.LocalPath != "" {
@@ -464,7 +402,7 @@ func (r *Cdk8sAppProxyReconciler) prepareSourceForDeletion(ctx context.Context, 
 	return "", func() {}, err
 }
 
-func (r *Cdk8sAppProxyReconciler) prepareGitSourceForDeletion(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (string, func(), error) {
+func (r *Reconciler) prepareGitSourceForDeletion(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (string, func(), error) {
 	gitSpec := cdk8sAppProxy.Spec.GitRepository
 	logger.Info("Using GitRepository source for deletion logic", "url", gitSpec.URL, "reference", gitSpec.Reference, "path", gitSpec.Path)
 
@@ -491,7 +429,7 @@ func (r *Cdk8sAppProxyReconciler) prepareGitSourceForDeletion(ctx context.Contex
 
 	// Handle authentication if specified
 	if gitSpec.AuthSecretRef != nil {
-		auth, err := r.getGitAuth(ctx, cdk8sAppProxy, gitSpec.AuthSecretRef, logger)
+		auth, err := r.getGitAuth(ctx, cdk8sAppProxy, gitSpec.AuthSecretRef, logger, "prepareGitSourceForDeletion")
 		if err != nil {
 			cleanupFunc()
 
@@ -501,13 +439,13 @@ func (r *Cdk8sAppProxyReconciler) prepareGitSourceForDeletion(ctx context.Contex
 	}
 
 	// Clone repository
-	if err := r.cloneGitRepoForDeletion(ctx, tempDir, cloneOptions, logger); err != nil {
+	if err := r.cloneGitRepository(ctx, nil, gitSpec, tempDir, logger, "prepareGitSourceForDeletion"); err != nil {
 		cleanupFunc()
 
 		return "", func() {}, err
 	}
 
-	// Checkout specific reference if specified
+	// Checkout-specific reference if specified
 	if gitSpec.Reference != "" {
 		if err := r.checkoutGitReferenceForDeletion(tempDir, gitSpec.Reference, logger); err != nil {
 			cleanupFunc()
@@ -525,56 +463,7 @@ func (r *Cdk8sAppProxyReconciler) prepareGitSourceForDeletion(ctx context.Contex
 	return appSourcePath, cleanupFunc, nil
 }
 
-func (r *Cdk8sAppProxyReconciler) getGitAuth(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, authSecretRef *corev1.LocalObjectReference, logger logr.Logger) (*http.BasicAuth, error) {
-	logger.Info("AuthSecretRef specified for deletion clone, attempting to fetch secret", "secretName", authSecretRef.Name)
-
-	authSecret := &corev1.Secret{}
-	secretKey := client.ObjectKey{Namespace: cdk8sAppProxy.Namespace, Name: authSecretRef.Name}
-	if err := r.Get(ctx, secretKey, authSecret); err != nil {
-		logger.Error(err, "Failed to get auth secret for git clone during deletion", "secretName", secretKey.String())
-
-		return nil, err
-	}
-
-	username, okUser := authSecret.Data["username"]
-	password, okPass := authSecret.Data["password"]
-
-	if !okUser || !okPass {
-		err := errors.New("auth secret missing username or password fields for deletion clone")
-		logger.Error(err, "Invalid auth secret for deletion clone", "secretName", secretKey.String())
-
-		return nil, err
-	}
-
-	logger.Info("Successfully fetched auth secret for deletion clone")
-
-	return &http.BasicAuth{
-		Username: string(username),
-		Password: string(password),
-	}, nil
-}
-
-func (r *Cdk8sAppProxyReconciler) cloneGitRepoForDeletion(ctx context.Context, tempDir string, cloneOptions *git.CloneOptions, logger logr.Logger) error {
-	logger.Info("Executing git clone with go-git for deletion", "url", cloneOptions.URL, "targetDir", tempDir)
-
-	_, err := git.PlainCloneContext(ctx, tempDir, false, cloneOptions)
-	if err != nil {
-		logger.Error(err, "go-git PlainCloneContext failed during deletion")
-		reason := addonsv1alpha1.GitCloneFailedReason
-		if errors.Is(err, plumbingtransport.ErrAuthenticationRequired) || strings.Contains(err.Error(), "authentication required") {
-			reason = addonsv1alpha1.GitAuthenticationFailedReason
-		}
-		logger.Error(err, "go-git clone failed during deletion", "reason", reason)
-
-		return err
-	}
-
-	logger.Info("Successfully cloned git repository with go-git for deletion")
-
-	return nil
-}
-
-func (r *Cdk8sAppProxyReconciler) checkoutGitReferenceForDeletion(tempDir, reference string, logger logr.Logger) error {
+func (r *Reconciler) checkoutGitReferenceForDeletion(tempDir, reference string, logger logr.Logger) error {
 	logger.Info("Executing git checkout with go-git for deletion", "reference", reference, "dir", tempDir)
 
 	repo, err := git.PlainOpen(tempDir)
@@ -617,7 +506,7 @@ func (r *Cdk8sAppProxyReconciler) checkoutGitReferenceForDeletion(tempDir, refer
 	return nil
 }
 
-func (r *Cdk8sAppProxyReconciler) synthesizeAndParseResources(appSourcePath string, logger logr.Logger) ([]*unstructured.Unstructured, error) {
+func (r *Reconciler) synthesizeAndParseResources(appSourcePath string, logger logr.Logger) ([]*unstructured.Unstructured, error) {
 	// Synthesize cdk8s application
 	if err := r.synthesizeCdk8sApp(appSourcePath, logger); err != nil {
 		return nil, err
@@ -633,7 +522,7 @@ func (r *Cdk8sAppProxyReconciler) synthesizeAndParseResources(appSourcePath stri
 	return r.parseResourcesFromManifests(manifestFiles, logger)
 }
 
-func (r *Cdk8sAppProxyReconciler) synthesizeCdk8sApp(appSourcePath string, logger logr.Logger) error {
+func (r *Reconciler) synthesizeCdk8sApp(appSourcePath string, logger logr.Logger) error {
 	logger.Info("Synthesizing cdk8s application to identify resources for deletion", "effectiveSourcePath", appSourcePath)
 
 	synthCmd := cmdRunnerFactory("cdk8s", "synth")
@@ -651,7 +540,7 @@ func (r *Cdk8sAppProxyReconciler) synthesizeCdk8sApp(appSourcePath string, logge
 	return nil
 }
 
-func (r *Cdk8sAppProxyReconciler) findManifestFiles(appSourcePath string, logger logr.Logger) ([]string, error) {
+func (r *Reconciler) findManifestFiles(appSourcePath string, logger logr.Logger) ([]string, error) {
 	distPath := filepath.Join(appSourcePath, "dist")
 	logger.Info("Looking for manifests for deletion", "distPath", distPath)
 
@@ -678,7 +567,7 @@ func (r *Cdk8sAppProxyReconciler) findManifestFiles(appSourcePath string, logger
 	return manifestFiles, nil
 }
 
-func (r *Cdk8sAppProxyReconciler) parseResourcesFromManifests(manifestFiles []string, logger logr.Logger) ([]*unstructured.Unstructured, error) {
+func (r *Reconciler) parseResourcesFromManifests(manifestFiles []string, logger logr.Logger) ([]*unstructured.Unstructured, error) {
 	var parsedResources []*unstructured.Unstructured
 
 	for _, manifestFile := range manifestFiles {
@@ -694,7 +583,7 @@ func (r *Cdk8sAppProxyReconciler) parseResourcesFromManifests(manifestFiles []st
 	return parsedResources, nil
 }
 
-func (r *Cdk8sAppProxyReconciler) parseResourcesFromSingleManifest(manifestFile string, logger logr.Logger) ([]*unstructured.Unstructured, error) {
+func (r *Reconciler) parseResourcesFromSingleManifest(manifestFile string, logger logr.Logger) ([]*unstructured.Unstructured, error) {
 	logger.Info("Processing manifest file for deletion", "file", manifestFile)
 
 	fileContent, readErr := os.ReadFile(manifestFile)
@@ -736,7 +625,7 @@ func (r *Cdk8sAppProxyReconciler) parseResourcesFromSingleManifest(manifestFile 
 	return parsedResources, nil
 }
 
-func (r *Cdk8sAppProxyReconciler) deleteResourcesFromClusters(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, parsedResources []*unstructured.Unstructured, logger logr.Logger) error {
+func (r *Reconciler) deleteResourcesFromClusters(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, parsedResources []*unstructured.Unstructured, logger logr.Logger) error {
 	// Get target clusters
 	clusterList, err := r.getTargetClustersForDeletion(ctx, cdk8sAppProxy, logger)
 	if err != nil {
@@ -754,7 +643,7 @@ func (r *Cdk8sAppProxyReconciler) deleteResourcesFromClusters(ctx context.Contex
 	return nil
 }
 
-func (r *Cdk8sAppProxyReconciler) getTargetClustersForDeletion(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (*clusterv1.ClusterList, error) {
+func (r *Reconciler) getTargetClustersForDeletion(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (*clusterv1.ClusterList, error) {
 	clusterList := &clusterv1.ClusterList{}
 	selector, err := metav1.LabelSelectorAsSelector(&cdk8sAppProxy.Spec.ClusterSelector)
 	if err != nil {
@@ -779,7 +668,7 @@ func (r *Cdk8sAppProxyReconciler) getTargetClustersForDeletion(ctx context.Conte
 	return clusterList, nil
 }
 
-func (r *Cdk8sAppProxyReconciler) deleteResourcesFromSingleCluster(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, cluster clusterv1.Cluster, parsedResources []*unstructured.Unstructured, logger logr.Logger) error {
+func (r *Reconciler) deleteResourcesFromSingleCluster(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, cluster clusterv1.Cluster, parsedResources []*unstructured.Unstructured, logger logr.Logger) error {
 	clusterLogger := logger.WithValues("targetCluster", cluster.Name)
 	clusterLogger.Info("Deleting resources from cluster")
 
@@ -802,7 +691,7 @@ func (r *Cdk8sAppProxyReconciler) deleteResourcesFromSingleCluster(ctx context.C
 	return nil
 }
 
-func (r *Cdk8sAppProxyReconciler) deleteResourceFromCluster(ctx context.Context, dynamicClient dynamic.Interface, resource *unstructured.Unstructured, logger logr.Logger) error {
+func (r *Reconciler) deleteResourceFromCluster(ctx context.Context, dynamicClient dynamic.Interface, resource *unstructured.Unstructured, logger logr.Logger) error {
 	gvr := resource.GroupVersionKind().GroupVersion().WithResource(getPluralFromKind(resource.GetKind()))
 	logger.Info("Deleting resource from cluster", "GVK", resource.GroupVersionKind().String(), "Name", resource.GetName(), "Namespace", resource.GetNamespace())
 
@@ -822,7 +711,7 @@ func (r *Cdk8sAppProxyReconciler) deleteResourceFromCluster(ctx context.Context,
 	return nil
 }
 
-func (r *Cdk8sAppProxyReconciler) finalizeDeletion(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, proxyNamespacedName types.NamespacedName, logger logr.Logger) (ctrl.Result, error) {
+func (r *Reconciler) finalizeDeletion(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, proxyNamespacedName types.NamespacedName, logger logr.Logger) (ctrl.Result, error) {
 	// Cancel any active watches for this Cdk8sAppProxy
 	r.cancelActiveWatches(proxyNamespacedName, logger)
 
@@ -830,14 +719,14 @@ func (r *Cdk8sAppProxyReconciler) finalizeDeletion(ctx context.Context, cdk8sApp
 	return r.removeFinalizer(ctx, cdk8sAppProxy, logger)
 }
 
-func (r *Cdk8sAppProxyReconciler) cancelActiveWatches(proxyNamespacedName types.NamespacedName, logger logr.Logger) {
+func (r *Reconciler) cancelActiveWatches(proxyNamespacedName types.NamespacedName, logger logr.Logger) {
 	if watchesForProxy, ok := r.ActiveWatches[proxyNamespacedName]; ok {
 		logger.Info("Cancelling active watches for Cdk8sAppProxy before deletion", "count", len(watchesForProxy))
 		for watchKey, cancelFunc := range watchesForProxy {
 			logger.Info("Cancelling watch", "watchKey", watchKey)
 			cancelFunc() // Stop the goroutine and its associated Kubernetes watch
 		}
-		// After all watches for this proxy are cancelled, remove its entry from the main map
+		// After all, watches for this proxy are canceled, remove its entry from the main map
 		delete(r.ActiveWatches, proxyNamespacedName)
 		logger.Info("Removed Cdk8sAppProxy entry from ActiveWatches map")
 	} else {
@@ -845,9 +734,9 @@ func (r *Cdk8sAppProxyReconciler) cancelActiveWatches(proxyNamespacedName types.
 	}
 }
 
-func (r *Cdk8sAppProxyReconciler) removeFinalizer(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (ctrl.Result, error) {
+func (r *Reconciler) removeFinalizer(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (ctrl.Result, error) {
 	logger.Info("Finished deletion logic, removing finalizer")
-	controllerutil.RemoveFinalizer(cdk8sAppProxy, Cdk8sAppProxyFinalizer)
+	controllerutil.RemoveFinalizer(cdk8sAppProxy, Finalizer)
 	if err := r.Update(ctx, cdk8sAppProxy); err != nil {
 		logger.Error(err, "Failed to remove finalizer")
 
@@ -858,7 +747,7 @@ func (r *Cdk8sAppProxyReconciler) removeFinalizer(ctx context.Context, cdk8sAppP
 	return ctrl.Result{}, nil
 }
 
-func (r *Cdk8sAppProxyReconciler) getDynamicClientForCluster(ctx context.Context, secretNamespace, clusterName string) (dynamic.Interface, error) {
+func (r *Reconciler) getDynamicClientForCluster(ctx context.Context, secretNamespace, clusterName string) (dynamic.Interface, error) {
 	logger := log.FromContext(ctx).WithValues("secretNamespace", secretNamespace, "clusterName", clusterName)
 	kubeconfigSecretName := clusterName + "-kubeconfig"
 	logger.Info("Attempting to get Kubeconfig secret", "secretName", kubeconfigSecretName)
@@ -895,7 +784,7 @@ func (r *Cdk8sAppProxyReconciler) getDynamicClientForCluster(ctx context.Context
 }
 
 // handleError is a helper to consistently update status conditions and log errors.
-func (r *Cdk8sAppProxyReconciler) handleError(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, reason, messageFormat string, err error) error {
+func (r *Reconciler) handleError(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, reason, messageFormat string, err error) error {
 	logger := log.FromContext(ctx).WithValues("cdk8sappproxy", types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace})
 	logger.Error(err, "Reconciliation error", "reason", reason, "messageFormat", messageFormat)
 	conditions.MarkFalse(cdk8sAppProxy, addonsv1alpha1.DeploymentProgressingCondition, reason, clusterv1.ConditionSeverityError, messageFormat, err.Error()) // Pass err.Error() for message
@@ -907,14 +796,14 @@ func (r *Cdk8sAppProxyReconciler) handleError(ctx context.Context, cdk8sAppProxy
 }
 
 // handleDeleteError is a helper for reconcileDelete to remove finalizer if non-requeueable error occurs.
-func (r *Cdk8sAppProxyReconciler) handleDeleteError(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, message string, originalErr error) error {
+func (r *Reconciler) handleDeleteError(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, message string, originalErr error) error {
 	logger := log.FromContext(ctx).WithValues("cdk8sappproxy", types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace})
 	if originalErr != nil {
 		logger.Error(originalErr, message+", proceeding to remove finalizer")
 	} else {
 		logger.Info(message + ", proceeding to remove finalizer")
 	}
-	controllerutil.RemoveFinalizer(cdk8sAppProxy, Cdk8sAppProxyFinalizer)
+	controllerutil.RemoveFinalizer(cdk8sAppProxy, Finalizer)
 	if err := r.Update(ctx, cdk8sAppProxy); err != nil {
 		logger.Error(err, "Failed to remove finalizer after error on delete")
 
@@ -951,7 +840,7 @@ func getPluralFromKind(kind string) string {
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *Cdk8sAppProxyReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {
+func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&addonsv1alpha1.Cdk8sAppProxy{}).
 		WithOptions(options). // Add this line
@@ -964,7 +853,7 @@ func (r *Cdk8sAppProxyReconciler) SetupWithManager(mgr ctrl.Manager, options con
 
 // ClusterToCdk8sAppProxyMapper is a handler.ToRequestsFunc to be used to enqeue requests for Cdk8sAppProxyReconciler.
 // It maps CAPI Cluster events to Cdk8sAppProxy events.
-func (r *Cdk8sAppProxyReconciler) ClusterToCdk8sAppProxyMapper(ctx context.Context, o client.Object) []ctrl.Request {
+func (r *Reconciler) ClusterToCdk8sAppProxyMapper(ctx context.Context, o client.Object) []ctrl.Request {
 	logger := log.FromContext(ctx)
 	cluster, ok := o.(*clusterv1.Cluster)
 	if !ok {
@@ -983,7 +872,7 @@ func (r *Cdk8sAppProxyReconciler) ClusterToCdk8sAppProxyMapper(ctx context.Conte
 	// However, Cdk8sAppProxy resources themselves select clusters across namespaces.
 	// So, we should list Cdk8sAppProxies from all namespaces if the controller has cluster-wide watch permissions for them.
 	// If the controller is namespace-scoped for Cdk8sAppProxy, this list will be limited.
-	// For this example, let's assume cluster-wide list for Cdk8sAppProxy.
+	// For this example, let's assume a cluster-wide list for Cdk8sAppProxy.
 	if err := r.List(ctx, proxies); err != nil { // staticcheck: QF1008
 		logger.Error(err, "failed to list Cdk8sAppProxies")
 
@@ -1022,14 +911,14 @@ func (r *Cdk8sAppProxyReconciler) ClusterToCdk8sAppProxyMapper(ctx context.Conte
 	return requests
 }
 
-func (r *Cdk8sAppProxyReconciler) watchResourceOnTargetCluster(
-	ctx context.Context, // This context is the one that can be cancelled to stop the watch
+func (r *Reconciler) watchResourceOnTargetCluster(
+	ctx context.Context,
 	targetClient dynamic.Interface,
 	gvk schema.GroupVersionKind,
 	namespace string,
 	name string,
 	parentProxy types.NamespacedName,
-	watchKey string, // For logging and map management
+	watchKey string,
 ) {
 	logger := log.FromContext(ctx).WithValues(
 		"watchKey", watchKey,
@@ -1044,21 +933,20 @@ func (r *Cdk8sAppProxyReconciler) watchResourceOnTargetCluster(
 
 	watcher, err := targetClient.Resource(gvr).Namespace(namespace).Watch(ctx, metav1.ListOptions{
 		FieldSelector: "metadata.name=" + name,
-		// Watch:         true, // Watch is implicit in Watch() method
 	})
 	if err != nil {
 		logger.Error(err, "Failed to start watch for resource")
 		// Clean up the watch from the map if it failed to start
 		if r.ActiveWatches[parentProxy] != nil {
 			if cancelFn, ok := r.ActiveWatches[parentProxy][watchKey]; ok {
-				cancelFn() // Call cancel to ensure context is cleaned up if partially initialized
+				cancelFn()
 				delete(r.ActiveWatches[parentProxy], watchKey)
 			}
 		}
 
 		return
 	}
-	defer watcher.Stop() // Ensure watcher is stopped when goroutine exits
+	defer watcher.Stop()
 
 	for {
 		select {
@@ -1066,7 +954,7 @@ func (r *Cdk8sAppProxyReconciler) watchResourceOnTargetCluster(
 			if !ok {
 				logger.Info("Watch channel closed for resource. Parent controller will re-trigger reconciliation if needed.")
 				// Remove from activeWatches as this specific watch instance is now defunct.
-				// The parent reconcile loop will re-establish if the resource still needs to be watched.
+				// The parent reconcile loop will re-establish it if the resource still needs to be watched.
 				if r.ActiveWatches[parentProxy] != nil {
 					// Check if the current cancel func is still the one we started with,
 					// though simple deletion is usually fine as reconcileNormal will overwrite.
@@ -1106,10 +994,10 @@ func (r *Cdk8sAppProxyReconciler) watchResourceOnTargetCluster(
 
 				logger.Info("Resource deleted on target cluster. Cancelling this watch and removing from active watches. Parent Cdk8sAppProxy will re-reconcile.")
 				// The resource is deleted. This watch is no longer valid.
-				// Cancel this watch's context (which calls defer watcher.Stop())
+				// Cancel this watch context (which calls defer watcher.Stop())
 				// and remove it from the activeWatches map.
 				// The main reconcile loop of the parent Cdk8sAppProxy will eventually run
-				// (due to resync period or other events) and will attempt to re-create
+				// (due to a resync period or other events) and will attempt to re-create
 				// the resource and a new watch for it.
 				if r.ActiveWatches[parentProxy] != nil {
 					if cancelFn, ok := r.ActiveWatches[parentProxy][watchKey]; ok {
@@ -1122,11 +1010,11 @@ func (r *Cdk8sAppProxyReconciler) watchResourceOnTargetCluster(
 			}
 			// For other events (Added, Modified), we just log and continue watching.
 			// The main reconciliation loop is responsible for desired state enforcement.
-			// This watch is primarily to detect deletions and clean up itself.
+			// This watch is primarily to detect deletions and clean itself up.
 
 		case <-ctx.Done():
 			logger.Info("Watch context cancelled for resource. Stopping watch.")
-			// Context was cancelled (likely by reconcileNormal stopping this watch, or reconciler shutting down).
+			// Context was canceled (likely by reconcileNormal stopping this watch, or reconciler shutting down).
 			// Remove this watch from the activeWatches map.
 			if r.ActiveWatches[parentProxy] != nil {
 				delete(r.ActiveWatches[parentProxy], watchKey)
