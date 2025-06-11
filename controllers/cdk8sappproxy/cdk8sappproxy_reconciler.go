@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"time"
 
 	addonsv1alpha1 "github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/api/v1alpha1"
 	"github.com/go-git/go-git/v5"
@@ -242,7 +243,7 @@ func (r *Reconciler) prepareSource(ctx context.Context, cdk8sAppProxy *addonsv1a
 	case cdk8sAppProxy.Spec.LocalPath != "":
 		logger.Info("Determined source type: LocalPath", "path", cdk8sAppProxy.Spec.LocalPath)
 		appSourcePath = cdk8sAppProxy.Spec.LocalPath
-		cleanupFunc = func() {} // No cleanup needed for a local path
+		cleanupFunc = func() {}
 
 		// Stop any existing git poller for a local path
 		if cancel, ok := r.activeGitPollers[proxyNamespacedName]; ok {
@@ -259,7 +260,8 @@ func (r *Reconciler) prepareSource(ctx context.Context, cdk8sAppProxy *addonsv1a
 			cancel()
 			delete(r.activeGitPollers, proxyNamespacedName)
 		}
-		_ = r.handleError(ctx, cdk8sAppProxy, addonsv1alpha1.SourceNotSpecifiedReason, "Neither GitRepository nor LocalPath specified", err)
+		// Use the new consolidated error handler - removeFinalizer = false for normal operations
+		_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.SourceNotSpecifiedReason, "Neither GitRepository nor LocalPath specified", err, false)
 
 		return "", "", nil, err
 	}
@@ -274,7 +276,7 @@ func (r *Reconciler) prepareGitSource(ctx context.Context, cdk8sAppProxy *addons
 	tempDir, err := os.MkdirTemp("", "cdk8s-git-clone-")
 	if err != nil {
 		logger.Error(err, "Failed to create temp directory for git clone")
-		_ = r.handleError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCloneFailedReason, "Failed to create temp dir for git clone", err)
+		_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCloneFailedReason, "Failed to create temp dir for git clone", err, false)
 
 		return "", "", nil, err
 	}
@@ -289,14 +291,14 @@ func (r *Reconciler) prepareGitSource(ctx context.Context, cdk8sAppProxy *addons
 	logger.Info("Created temporary directory for clone", "tempDir", tempDir)
 
 	// Clone repository
-	if err := r.cloneGitRepository(ctx, cdk8sAppProxy, gitSpec, tempDir, logger, "prepareGitSource"); err != nil {
+	if err := r.cloneGitRepository(ctx, cdk8sAppProxy, gitSpec, tempDir, logger, OperationNormal); err != nil {
 		cleanupFunc()
 
 		return "", "", nil, err
 	}
 
 	// Checkout-specific reference if specified
-	if err := r.checkoutReference(ctx, cdk8sAppProxy, gitSpec, tempDir, logger); err != nil {
+	if err := r.checkoutGitReference(ctx, cdk8sAppProxy, gitSpec, tempDir, logger, OperationNormal); err != nil {
 		cleanupFunc()
 
 		return "", "", nil, err
@@ -314,30 +316,40 @@ func (r *Reconciler) prepareGitSource(ctx context.Context, cdk8sAppProxy *addons
 	if err != nil {
 		cleanupFunc()
 
-		return "", "", nil, r.handleError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCloneFailedReason, "Failed to get commit hash: "+err.Error(), err)
+		return "", "", nil, r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCloneFailedReason, "Failed to get commit hash: "+err.Error(), err, false)
 	}
 
 	return appSourcePath, currentCommitHash, cleanupFunc, nil
 }
 
-func (r *Reconciler) checkoutReference(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, gitSpec *addonsv1alpha1.GitRepositorySpec, tempDir string, logger logr.Logger) error {
+func (r *Reconciler) checkoutGitReference(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, gitSpec *addonsv1alpha1.GitRepositorySpec, tempDir string, logger logr.Logger, operation string) error {
 	if gitSpec.Reference == "" {
 		return nil
 	}
+	logger.Info("Executing git checkout with go-git", "reference", gitSpec.Reference, "dir", tempDir, "operation", operation)
 
-	logger.Info("Executing git checkout with go-git", "reference", gitSpec.Reference, "dir", tempDir)
 	repo, err := git.PlainOpen(tempDir)
 	if err != nil {
-		logger.Error(err, "go-git PlainOpen failed")
+		logger.Error(err, "go-git PlainOpen failed", "operation", operation)
+		if cdk8sAppProxy != nil {
+			removeFinalizer := operation == OperationDeletion
 
-		return r.handleError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCheckoutFailedReason, "go-git PlainOpen failed", err)
+			return r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCheckoutFailedReason, "go-git PlainOpen failed during "+operation, err, removeFinalizer)
+		}
+
+		return err
 	}
 
 	worktree, err := repo.Worktree()
 	if err != nil {
-		logger.Error(err, "go-git Worktree failed")
+		logger.Error(err, "go-git Worktree failed", "operation", operation)
+		if cdk8sAppProxy != nil {
+			removeFinalizer := operation == OperationDeletion
 
-		return r.handleError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCheckoutFailedReason, "go-git Worktree failed", err)
+			return r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCheckoutFailedReason, "go-git Worktree failed during "+operation, err, removeFinalizer)
+		}
+
+		return err
 	}
 
 	checkoutOpts := &git.CheckoutOptions{Force: true}
@@ -347,21 +359,30 @@ func (r *Reconciler) checkoutReference(ctx context.Context, cdk8sAppProxy *addon
 		revision := plumbing.Revision(gitSpec.Reference)
 		resolvedHash, err := repo.ResolveRevision(revision)
 		if err != nil {
-			logger.Error(err, "go-git ResolveRevision failed", "reference", gitSpec.Reference)
+			logger.Error(err, "go-git ResolveRevision failed", "reference", gitSpec.Reference, "operation", operation)
+			if cdk8sAppProxy != nil {
+				removeFinalizer := operation == OperationDeletion
 
-			return r.handleError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCheckoutFailedReason, "go-git ResolveRevision failed for ref "+gitSpec.Reference, err)
+				return r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCheckoutFailedReason, "go-git ResolveRevision failed for ref "+gitSpec.Reference+" during "+operation, err, removeFinalizer)
+			}
+
+			return err
 		}
 		checkoutOpts.Hash = *resolvedHash
 	}
 
 	err = worktree.Checkout(checkoutOpts)
 	if err != nil {
-		logger.Error(err, "go-git Checkout failed", "reference", gitSpec.Reference)
+		logger.Error(err, "go-git Checkout failed", "reference", gitSpec.Reference, "operation", operation)
+		if cdk8sAppProxy != nil {
+			removeFinalizer := operation == OperationDeletion
 
-		return r.handleError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCheckoutFailedReason, "go-git Checkout failed for ref "+gitSpec.Reference, err)
+			return r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCheckoutFailedReason, "go-git Checkout failed for ref "+gitSpec.Reference+" during "+operation, err, removeFinalizer)
+		}
+
+		return err
 	}
-
-	logger.Info("Successfully checked out git reference with go-git", "reference", gitSpec.Reference)
+	logger.Info("Successfully checked out git reference with go-git", "reference", gitSpec.Reference, "operation", operation)
 
 	return nil
 }
@@ -386,25 +407,6 @@ func (r *Reconciler) getCurrentCommitHash(tempDir string, logger logr.Logger) (s
 	logger.Info("Successfully retrieved current commit hash from Git repository", "commitHash", commitHash)
 
 	return commitHash, nil
-}
-
-func (r *Reconciler) manageGitPollerLifecycle(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, proxyNamespacedName types.NamespacedName, logger logr.Logger) {
-	if cdk8sAppProxy.Spec.GitRepository != nil && cdk8sAppProxy.Spec.GitRepository.URL != "" {
-		if _, pollerExists := r.activeGitPollers[proxyNamespacedName]; !pollerExists {
-			logger.Info("Starting new git poller.")
-			pollCtx, cancelPoll := context.WithCancel(ctx)
-			r.activeGitPollers[proxyNamespacedName] = cancelPoll
-			go r.pollGitRepository(pollCtx, proxyNamespacedName)
-		} else {
-			logger.Info("Git poller already active.")
-		}
-	} else {
-		if cancel, pollerExists := r.activeGitPollers[proxyNamespacedName]; pollerExists {
-			logger.Info("GitRepository is not configured, ensuring poller is stopped.")
-			cancel()
-			delete(r.activeGitPollers, proxyNamespacedName)
-		}
-	}
 }
 
 func (r *Reconciler) handleNoResources(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) error {
@@ -453,14 +455,14 @@ func (r *Reconciler) verifyResourcesOnClusters(ctx context.Context, cdk8sAppProx
 	if err != nil {
 		logger.Error(err, "Failed to parse ClusterSelector for verification, assuming resources might be missing.", "selector", cdk8sAppProxy.Spec.ClusterSelector)
 
-		return true, clusterList, r.handleError(ctx, cdk8sAppProxy, addonsv1alpha1.ClusterSelectorParseFailedReason, "Failed to parse ClusterSelector for verification", err)
+		return true, clusterList, r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.ClusterSelectorParseFailedReason, "Failed to parse ClusterSelector for verification", err, false)
 	}
 
 	logger.Info("Listing clusters for resource verification", "selector", selector.String(), "namespace", cdk8sAppProxy.Namespace)
 	if err := r.List(ctx, &clusterList, client.MatchingLabelsSelector{Selector: selector}); err != nil {
 		logger.Error(err, "Failed to list clusters for verification, assuming resources might be missing.")
 
-		return true, clusterList, r.handleError(ctx, cdk8sAppProxy, addonsv1alpha1.ListClustersFailedReason, "Failed to list clusters for verification", err)
+		return true, clusterList, r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.ListClustersFailedReason, "Failed to list clusters for verification", err, false)
 	}
 
 	if len(clusterList.Items) == 0 {
@@ -587,13 +589,13 @@ func (r *Reconciler) applyResourcesToClusters(ctx context.Context, cdk8sAppProxy
 		if err != nil {
 			logger.Error(err, "Failed to parse ClusterSelector for application phase", "selector", cdk8sAppProxy.Spec.ClusterSelector)
 
-			return ctrl.Result{}, r.handleError(ctx, cdk8sAppProxy, addonsv1alpha1.ClusterSelectorParseFailedReason, "Failed to parse ClusterSelector for application", err)
+			return ctrl.Result{}, r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.ClusterSelectorParseFailedReason, "Failed to parse ClusterSelector for application", err, false)
 		}
 		logger.Info("Listing clusters for application phase", "selector", selector.String(), "namespace", cdk8sAppProxy.Namespace)
 		if err := r.List(ctx, &clusterList, client.MatchingLabelsSelector{Selector: selector}); err != nil {
 			logger.Error(err, "Failed to list clusters for application phase")
 
-			return ctrl.Result{}, r.handleError(ctx, cdk8sAppProxy, addonsv1alpha1.ListClustersFailedReason, "Failed to list clusters for application", err)
+			return ctrl.Result{}, r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.ListClustersFailedReason, "Failed to list clusters for application", err, false)
 		}
 		if len(clusterList.Items) == 0 {
 			logger.Info("No clusters found matching the selector for application phase.")
@@ -657,22 +659,15 @@ func (r *Reconciler) applyResourcesToClusters(ctx context.Context, cdk8sAppProxy
 			} else {
 				clusterLogger.Info("Successfully applied resource to cluster", "resourceName", resourceCopy.GetName())
 				watchKey := string(cluster.GetUID()) + "/" + resourceCopy.GetNamespace() + "/" + resourceCopy.GetName() + "/" + gvk.String()
-				if cancel, ok := r.ActiveWatches[proxyNamespacedName][watchKey]; ok {
-					clusterLogger.Info("Cancelling existing watch for resource", "watchKey", watchKey)
-					cancel()
-					delete(r.ActiveWatches[proxyNamespacedName], watchKey)
+
+				// Stop existing watch if it exists
+				r.WatchManager.Stop(proxyNamespacedName, watchKey)
+
+				if err := r.startResourceWatch(ctx, dynamicClient, gvk, appliedResource.GetNamespace(), appliedResource.GetName(), proxyNamespacedName, watchKey); err != nil {
+					clusterLogger.Error(err, "Failed to start watch for applied resource", "watchKey", watchKey)
+				} else {
+					clusterLogger.Info("Successfully started watch for applied resource", "watchKey", watchKey)
 				}
-				watchCtx, cancelWatch := context.WithCancel(ctx)
-				r.ActiveWatches[proxyNamespacedName][watchKey] = cancelWatch
-				go r.watchResourceOnTargetCluster(
-					watchCtx,
-					dynamicClient,
-					gvk,
-					appliedResource.GetNamespace(),
-					appliedResource.GetName(),
-					proxyNamespacedName,
-					watchKey,
-				)
 			}
 		}
 	}
@@ -699,4 +694,28 @@ func (r *Reconciler) applyResourcesToClusters(ctx context.Context, cdk8sAppProxy
 	logger.Info("Successfully reconciled Cdk8sAppProxy and applied/verified resources.")
 
 	return ctrl.Result{}, nil
+}
+
+func (r *Reconciler) triggerReconciliation(ctx context.Context, proxyName types.NamespacedName, logger logr.Logger) error {
+	proxyToAnnotate := &addonsv1alpha1.Cdk8sAppProxy{}
+	if err := r.Get(ctx, proxyName, proxyToAnnotate); err != nil {
+		logger.Error(err, "Failed to get latest Cdk8sAppProxy for annotation update")
+
+		return err
+	}
+
+	if proxyToAnnotate.Annotations == nil {
+		proxyToAnnotate.Annotations = make(map[string]string)
+	}
+	proxyToAnnotate.Annotations["cdk8s.addons.cluster.x-k8s.io/git-poll-trigger"] = time.Now().Format(time.RFC3339Nano)
+
+	if err := r.Update(ctx, proxyToAnnotate); err != nil {
+		logger.Error(err, "Failed to update Cdk8sAppProxy annotations to trigger reconciliation")
+
+		return err
+	}
+
+	logger.Info("Successfully updated annotations to trigger reconciliation.")
+
+	return nil
 }

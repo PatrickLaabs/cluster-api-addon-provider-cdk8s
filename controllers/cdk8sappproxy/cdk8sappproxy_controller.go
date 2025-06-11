@@ -24,13 +24,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	addonsv1alpha1 "github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/api/v1alpha1"
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
-	"github.com/go-git/go-git/v5/plumbing"
-	plumbingtransport "github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
@@ -42,22 +37,16 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
-	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/clientcmd"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	"github.com/go-git/go-git/v5/storage/memory"
 )
-
-const gitPollInterval = 1 * time.Minute
 
 // CommandExecutor defines an interface for running external commands.
 type CommandExecutor interface {
@@ -93,57 +82,6 @@ var cmdRunnerFactory = func(name string, args ...string) CommandExecutor {
 	return &RealCmdRunner{Name: name, Args: args}
 }
 
-// pollGitRepository periodically checks the remote git repository for changes.
-func (r *Reconciler) pollGitRepository(ctx context.Context, proxyName types.NamespacedName) {
-	logger := log.FromContext(ctx).WithValues("cdk8sappproxy", proxyName.String(), "goroutine", "pollGitRepository")
-	logger.Info("Starting git repository polling loop")
-
-	ticker := time.NewTicker(gitPollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			if err := r.pollGitRepositoryOnce(ctx, proxyName, logger); err != nil {
-				logger.Error(err, "Error during git repository polling")
-			}
-		case <-ctx.Done():
-			logger.Info("Stopping git repository polling loop due to context cancellation.")
-
-			return
-		}
-	}
-}
-
-func (r *Reconciler) pollGitRepositoryOnce(ctx context.Context, proxyName types.NamespacedName, logger logr.Logger) error {
-	logger.Info("Polling git repository for changes")
-
-	cdk8sAppProxy, err := r.getCdk8sAppProxyForPolling(ctx, proxyName)
-	if err != nil {
-		return err
-	}
-
-	if cdk8sAppProxy == nil {
-		logger.Info("Cdk8sAppProxy resource not found, stopping polling.")
-
-		return errors.New("resource not found")
-	}
-
-	if !r.isGitRepositoryConfigured(cdk8sAppProxy, logger) {
-		return errors.New("git repository not configured")
-	}
-
-	gitSpec := cdk8sAppProxy.Spec.GitRepository
-	refName := r.determineGitReference(gitSpec, logger)
-
-	remoteCommitHash, err := r.fetchRemoteCommitHash(ctx, cdk8sAppProxy, gitSpec, refName, logger)
-	if err != nil {
-		return err
-	}
-
-	return r.handleGitRepositoryChange(ctx, proxyName, cdk8sAppProxy, remoteCommitHash, logger)
-}
-
 func (r *Reconciler) getCdk8sAppProxyForPolling(ctx context.Context, proxyName types.NamespacedName) (*addonsv1alpha1.Cdk8sAppProxy, error) {
 	cdk8sAppProxy := &addonsv1alpha1.Cdk8sAppProxy{}
 	if err := r.Get(ctx, proxyName, cdk8sAppProxy); err != nil {
@@ -155,137 +93,6 @@ func (r *Reconciler) getCdk8sAppProxyForPolling(ctx context.Context, proxyName t
 	}
 
 	return cdk8sAppProxy, nil
-}
-
-func (r *Reconciler) isGitRepositoryConfigured(cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) bool {
-	if cdk8sAppProxy.Spec.GitRepository == nil || cdk8sAppProxy.Spec.GitRepository.URL == "" {
-		logger.Info("GitRepository not configured for this Cdk8sAppProxy, stopping polling.")
-
-		return false
-	}
-
-	return true
-}
-
-func (r *Reconciler) determineGitReference(gitSpec *addonsv1alpha1.GitRepositorySpec, logger logr.Logger) plumbing.ReferenceName {
-	refName := plumbing.HEAD
-	if gitSpec.Reference == "" {
-		return refName
-	}
-
-	switch {
-	case plumbing.IsHash(gitSpec.Reference):
-		logger.Info("Polling a specific commit hash is not actively supported. The poller will check if the remote still has this hash, but it won't detect 'new' commits beyond this specific one. If you want to track a branch, please specify a branch name.", "reference", gitSpec.Reference)
-		refName = plumbing.ReferenceName(gitSpec.Reference)
-	case strings.HasPrefix(gitSpec.Reference, "refs/"):
-		refName = plumbing.ReferenceName(gitSpec.Reference)
-	case strings.Contains(gitSpec.Reference, "/"):
-		refName = plumbing.ReferenceName(gitSpec.Reference)
-	default:
-		logger.Info("Assuming Git reference is a branch name, prepending 'refs/heads/' for LsRemote.", "reference", gitSpec.Reference)
-		refName = plumbing.NewBranchReferenceName(gitSpec.Reference)
-	}
-
-	return refName
-}
-
-func (r *Reconciler) fetchRemoteCommitHash(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, gitSpec *addonsv1alpha1.GitRepositorySpec, refName plumbing.ReferenceName, logger logr.Logger) (string, error) {
-	logger.Info("Attempting to LsRemote", "url", gitSpec.URL, "refName", refName.String())
-
-	rem := git.NewRemote(memory.NewStorage(), &config.RemoteConfig{
-		URLs: []string{gitSpec.URL},
-	})
-
-	auth, err := r.getGitAuth(ctx, cdk8sAppProxy, gitSpec.AuthSecretRef, logger, "fetchRemoteCommitHash")
-	if err != nil {
-		return "", err
-	}
-
-	refs, err := rem.ListContext(ctx, &git.ListOptions{Auth: auth})
-	if err != nil {
-		logger.Error(err, "Failed to LsRemote from git repository")
-		if errors.Is(err, plumbingtransport.ErrAuthenticationRequired) || strings.Contains(err.Error(), "authentication required") {
-			logger.Info("Authentication failed for LsRemote. Please check credentials.")
-		}
-
-		return "", err
-	}
-
-	return r.findRemoteCommitHash(refs, refName, logger)
-}
-
-func (r *Reconciler) findRemoteCommitHash(refs []*plumbing.Reference, refName plumbing.ReferenceName, logger logr.Logger) (string, error) {
-	var remoteCommitHash string
-	foundRef := false
-
-	for _, ref := range refs {
-		if ref.Name() == refName {
-			remoteCommitHash = ref.Hash().String()
-			foundRef = true
-			logger.Info("Found matching reference in LsRemote output", "refName", refName.String(), "remoteCommitHash", remoteCommitHash)
-
-			break
-		}
-	}
-
-	if !foundRef {
-		foundRef, remoteCommitHash = r.tryFindDefaultBranch(refs, refName, logger)
-	}
-
-	if !foundRef {
-		logger.Info("Specified reference not found in LsRemote output.", "refName", refName.String())
-
-		return "", errors.New("reference not found")
-	}
-
-	if remoteCommitHash == "" {
-		logger.Info("Remote commit hash is empty after LsRemote, skipping update check.")
-
-		return "", errors.New("empty commit hash")
-	}
-
-	return remoteCommitHash, nil
-}
-
-func (r *Reconciler) tryFindDefaultBranch(refs []*plumbing.Reference, refName plumbing.ReferenceName, logger logr.Logger) (bool, string) {
-	if refName != plumbing.HEAD {
-		return false, ""
-	}
-
-	logger.Info("HEAD reference not explicitly found, searching for default branches like main/master.")
-	defaultBranches := []plumbing.ReferenceName{
-		plumbing.NewBranchReferenceName("main"),
-		plumbing.NewBranchReferenceName("master"),
-	}
-
-	for _, defaultBranchRef := range defaultBranches {
-		for _, ref := range refs {
-			if ref.Name() == defaultBranchRef {
-				remoteCommitHash := ref.Hash().String()
-				logger.Info("Found default branch reference", "refName", defaultBranchRef.String(), "remoteCommitHash", remoteCommitHash)
-
-				return true, remoteCommitHash
-			}
-		}
-	}
-
-	return false, ""
-}
-
-func (r *Reconciler) handleGitRepositoryChange(ctx context.Context, proxyName types.NamespacedName, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, remoteCommitHash string, logger logr.Logger) error {
-	if cdk8sAppProxy.Status.LastRemoteGitHash == remoteCommitHash {
-		logger.Info("No change detected in remote git repository.", "currentRemoteHash", remoteCommitHash)
-
-		return nil
-	}
-
-	logger.Info("Detected change in remote git repository", "oldHash", cdk8sAppProxy.Status.LastRemoteGitHash, "newHash", remoteCommitHash)
-
-	if err := r.updateRemoteGitHashStatus(ctx, proxyName, remoteCommitHash, logger); err != nil {
-		return err
-	}
-
-	return r.triggerReconciliation(ctx, proxyName, logger)
 }
 
 func (r *Reconciler) updateRemoteGitHashStatus(ctx context.Context, proxyName types.NamespacedName, remoteCommitHash string, logger logr.Logger) error {
@@ -308,30 +115,6 @@ func (r *Reconciler) updateRemoteGitHashStatus(ctx context.Context, proxyName ty
 	return nil
 }
 
-func (r *Reconciler) triggerReconciliation(ctx context.Context, proxyName types.NamespacedName, logger logr.Logger) error {
-	proxyToAnnotate := &addonsv1alpha1.Cdk8sAppProxy{}
-	if err := r.Get(ctx, proxyName, proxyToAnnotate); err != nil {
-		logger.Error(err, "Failed to get latest Cdk8sAppProxy for annotation update")
-
-		return err
-	}
-
-	if proxyToAnnotate.Annotations == nil {
-		proxyToAnnotate.Annotations = make(map[string]string)
-	}
-	proxyToAnnotate.Annotations["cdk8s.addons.cluster.x-k8s.io/git-poll-trigger"] = time.Now().Format(time.RFC3339Nano)
-
-	if err := r.Update(ctx, proxyToAnnotate); err != nil {
-		logger.Error(err, "Failed to update Cdk8sAppProxy annotations to trigger reconciliation")
-
-		return err
-	}
-
-	logger.Info("Successfully updated annotations to trigger reconciliation.")
-
-	return nil
-}
-
 // Write implements the io.Writer interface.
 func (gpl *gitProgressLogger) Write(p []byte) (n int, err error) {
 	gpl.buffer = append(gpl.buffer, p...)
@@ -341,14 +124,14 @@ func (gpl *gitProgressLogger) Write(p []byte) (n int, err error) {
 			// If buffer gets too large without a newline, log it to prevent OOM
 			if len(gpl.buffer) > 1024 {
 				gpl.logger.Info(strings.TrimSpace(string(gpl.buffer)))
-				gpl.buffer = nil // Clear buffer
+				gpl.buffer = nil
 			}
 
 			break
 		}
 		line := gpl.buffer[:idx]
 		gpl.buffer = gpl.buffer[idx+1:]
-		gpl.logger.Info(strings.TrimSpace(string(line))) // Log each full line
+		gpl.logger.Info(strings.TrimSpace(string(line)))
 	}
 
 	return len(p), nil
@@ -380,169 +163,43 @@ func checkIfResourceExists(ctx context.Context, dynClient dynamic.Interface, gvr
 	return true, nil
 }
 
-func (r *Reconciler) stopGitPoller(proxyNamespacedName types.NamespacedName, logger logr.Logger) {
-	if cancel, ok := r.activeGitPollers[proxyNamespacedName]; ok {
-		logger.Info("Stopping git poller due to resource deletion.")
-		cancel()
-		delete(r.activeGitPollers, proxyNamespacedName)
-	}
-}
-
-func (r *Reconciler) prepareSourceForDeletion(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (string, func(), error) {
-	if cdk8sAppProxy.Spec.GitRepository != nil && cdk8sAppProxy.Spec.GitRepository.URL != "" {
-		return r.prepareGitSourceForDeletion(ctx, cdk8sAppProxy, logger)
-	} else if cdk8sAppProxy.Spec.LocalPath != "" {
-		return cdk8sAppProxy.Spec.LocalPath, func() {}, nil
-	}
-
-	err := errors.New("neither GitRepository nor LocalPath specified, cannot determine resources to delete")
-	logger.Info(err.Error())
-	_ = r.handleDeleteError(ctx, cdk8sAppProxy, err.Error(), nil)
-
-	return "", func() {}, err
-}
-
-func (r *Reconciler) prepareGitSourceForDeletion(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (string, func(), error) {
-	gitSpec := cdk8sAppProxy.Spec.GitRepository
-	logger.Info("Using GitRepository source for deletion logic", "url", gitSpec.URL, "reference", gitSpec.Reference, "path", gitSpec.Path)
-
-	tempDir, err := os.MkdirTemp("", "cdk8s-git-delete-")
-	if err != nil {
-		logger.Error(err, "failed to create temp dir for git clone during deletion")
-
-		return "", func() {}, err
-	}
-
-	cleanupFunc := func() {
-		logger.Info("Removing temporary clone directory for deletion", "tempDir", tempDir)
-		if err := os.RemoveAll(tempDir); err != nil {
-			logger.Error(err, "Failed to remove temporary clone directory for deletion", "tempDir", tempDir)
-		}
-	}
-
-	logger.Info("Created temporary directory for clone during deletion", "tempDir", tempDir)
-
-	cloneOptions := &git.CloneOptions{
-		URL:      gitSpec.URL,
-		Progress: &gitProgressLogger{logger: logger.WithName("git-clone-delete")},
-	}
-
-	// Handle authentication if specified
-	if gitSpec.AuthSecretRef != nil {
-		auth, err := r.getGitAuth(ctx, cdk8sAppProxy, gitSpec.AuthSecretRef, logger, "prepareGitSourceForDeletion")
-		if err != nil {
-			cleanupFunc()
-
-			return "", func() {}, err
-		}
-		cloneOptions.Auth = auth
-	}
-
-	// Clone repository
-	if err := r.cloneGitRepository(ctx, nil, gitSpec, tempDir, logger, "prepareGitSourceForDeletion"); err != nil {
-		cleanupFunc()
-
-		return "", func() {}, err
-	}
-
-	// Checkout-specific reference if specified
-	if gitSpec.Reference != "" {
-		if err := r.checkoutGitReferenceForDeletion(tempDir, gitSpec.Reference, logger); err != nil {
-			cleanupFunc()
-
-			return "", func() {}, err
-		}
-	}
-
-	appSourcePath := tempDir
-	if gitSpec.Path != "" {
-		appSourcePath = filepath.Join(tempDir, gitSpec.Path)
-		logger.Info("Adjusted appSourcePath for deletion", "subPath", gitSpec.Path, "finalPath", appSourcePath)
-	}
-
-	return appSourcePath, cleanupFunc, nil
-}
-
-func (r *Reconciler) checkoutGitReferenceForDeletion(tempDir, reference string, logger logr.Logger) error {
-	logger.Info("Executing git checkout with go-git for deletion", "reference", reference, "dir", tempDir)
-
-	repo, err := git.PlainOpen(tempDir)
-	if err != nil {
-		logger.Error(err, "go-git PlainOpen failed during deletion")
-
-		return err
-	}
-
-	worktree, err := repo.Worktree()
-	if err != nil {
-		logger.Error(err, "go-git Worktree failed during deletion")
-
-		return err
-	}
-
-	checkoutOpts := &git.CheckoutOptions{Force: true}
-	if plumbing.IsHash(reference) {
-		checkoutOpts.Hash = plumbing.NewHash(reference)
-	} else {
-		revision := plumbing.Revision(reference)
-		resolvedHash, err := repo.ResolveRevision(revision)
-		if err != nil {
-			logger.Error(err, "go-git ResolveRevision failed during deletion", "reference", reference)
-
-			return err
-		}
-		checkoutOpts.Hash = *resolvedHash
-	}
-
-	err = worktree.Checkout(checkoutOpts)
-	if err != nil {
-		logger.Error(err, "go-git Checkout failed during deletion", "reference", reference)
-
-		return err
-	}
-
-	logger.Info("Successfully checked out git reference with go-git for deletion", "reference", reference)
-
-	return nil
-}
-
 func (r *Reconciler) synthesizeAndParseResources(appSourcePath string, logger logr.Logger) ([]*unstructured.Unstructured, error) {
 	// Synthesize cdk8s application
-	if err := r.synthesizeCdk8sApp(appSourcePath, logger); err != nil {
+	if err := r.synthesizeCdk8sApp(appSourcePath, logger, OperationSynthesize); err != nil {
 		return nil, err
 	}
 
 	// Find manifest files
-	manifestFiles, err := r.findManifestFiles(appSourcePath, logger)
+	manifestFiles, err := r.findManifestFiles(appSourcePath, logger, OperationFindFiles)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse resources from manifest files
-	return r.parseResourcesFromManifests(manifestFiles, logger)
+	// Parse resources from manifest files using the consolidated function
+	return r.parseManifestFiles(manifestFiles, logger, OperationSynthesize)
 }
 
-func (r *Reconciler) synthesizeCdk8sApp(appSourcePath string, logger logr.Logger) error {
-	logger.Info("Synthesizing cdk8s application to identify resources for deletion", "effectiveSourcePath", appSourcePath)
+func (r *Reconciler) synthesizeCdk8sApp(appSourcePath string, logger logr.Logger, operation string) error {
+	logger.Info("Synthesizing cdk8s application", "effectiveSourcePath", appSourcePath, "operation", operation)
 
 	synthCmd := cmdRunnerFactory("cdk8s", "synth")
 	synthCmd.SetDir(appSourcePath)
 	output, synthErr := synthCmd.CombinedOutput()
 	if synthErr != nil {
-		logger.Error(synthErr, "cdk8s synth failed during deletion", "output", string(output))
+		logger.Error(synthErr, "cdk8s synth failed", "output", string(output), "operation", operation)
 
 		return synthErr
 	}
 
-	logger.Info("cdk8s synth successful for deletion", "outputSummary", truncateString(string(output), 200))
-	logger.V(1).Info("cdk8s synth full output for deletion", "output", string(output))
+	logger.Info("cdk8s synth successful", "outputSummary", truncateString(string(output), 200), "operation", operation)
+	logger.V(1).Info("cdk8s synth full output", "output", string(output), "operation", operation)
 
 	return nil
 }
 
-func (r *Reconciler) findManifestFiles(appSourcePath string, logger logr.Logger) ([]string, error) {
+func (r *Reconciler) findManifestFiles(appSourcePath string, logger logr.Logger, operation string) ([]string, error) {
 	distPath := filepath.Join(appSourcePath, "dist")
-	logger.Info("Looking for manifests for deletion", "distPath", distPath)
+	logger.Info("Looking for manifests for deletion", "distPath", distPath, "operation", operation)
 
 	var manifestFiles []string
 	walkErr := filepath.WalkDir(distPath, func(path string, d fs.DirEntry, err error) error {
@@ -557,38 +214,38 @@ func (r *Reconciler) findManifestFiles(appSourcePath string, logger logr.Logger)
 	})
 
 	if walkErr != nil {
-		logger.Error(walkErr, "Failed to walk dist directory during deletion")
+		logger.Error(walkErr, "Failed to walk dist directory", "operation", operation)
 
 		return nil, walkErr
 	}
 
-	logger.Info("Found manifest files for deletion", "count", len(manifestFiles))
+	logger.Info("Found manifest files", "count", len(manifestFiles), "operation", operation)
 
 	return manifestFiles, nil
 }
 
-func (r *Reconciler) parseResourcesFromManifests(manifestFiles []string, logger logr.Logger) ([]*unstructured.Unstructured, error) {
+func (r *Reconciler) parseManifestFiles(manifestFiles []string, logger logr.Logger, operation string) ([]*unstructured.Unstructured, error) {
 	var parsedResources []*unstructured.Unstructured
 
 	for _, manifestFile := range manifestFiles {
-		resources, err := r.parseResourcesFromSingleManifest(manifestFile, logger)
+		resources, err := r.parseManifestFile(manifestFile, logger, operation)
 		if err != nil {
 			return nil, err
 		}
 		parsedResources = append(parsedResources, resources...)
 	}
 
-	logger.Info("Total resources parsed for deletion", "count", len(parsedResources))
+	logger.Info("Total resources parsed", "count", len(parsedResources), "operation", operation)
 
 	return parsedResources, nil
 }
 
-func (r *Reconciler) parseResourcesFromSingleManifest(manifestFile string, logger logr.Logger) ([]*unstructured.Unstructured, error) {
-	logger.Info("Processing manifest file for deletion", "file", manifestFile)
+func (r *Reconciler) parseManifestFile(manifestFile string, logger logr.Logger, operation string) ([]*unstructured.Unstructured, error) {
+	logger.Info("Processing manifest file", "file", manifestFile, "operation", operation)
 
 	fileContent, readErr := os.ReadFile(manifestFile)
 	if readErr != nil {
-		logger.Error(readErr, "Failed to read manifest file during deletion", "file", manifestFile)
+		logger.Error(readErr, "Failed to read manifest file", "file", manifestFile, "operation", operation)
 
 		return nil, readErr
 	}
@@ -602,7 +259,7 @@ func (r *Reconciler) parseResourcesFromSingleManifest(manifestFile string, logge
 			if err.Error() == "EOF" {
 				break
 			}
-			logger.Error(err, "Failed to decode YAML from manifest file during deletion", "file", manifestFile)
+			logger.Error(err, "Failed to decode YAML from manifest file", "file", manifestFile, "operation", operation)
 
 			return nil, err
 		}
@@ -613,13 +270,13 @@ func (r *Reconciler) parseResourcesFromSingleManifest(manifestFile string, logge
 
 		u := &unstructured.Unstructured{}
 		if _, _, err := unstructured.UnstructuredJSONScheme.Decode(rawObj.Raw, nil, u); err != nil {
-			logger.Error(err, "Failed to decode RawExtension to Unstructured during deletion", "file", manifestFile)
+			logger.Error(err, "Failed to decode RawExtension to Unstructured", "file", manifestFile, "operation", operation)
 
 			return nil, err
 		}
 
 		parsedResources = append(parsedResources, u)
-		logger.Info("Parsed resource for deletion", "GVK", u.GroupVersionKind().String(), "Name", u.GetName(), "Namespace", u.GetNamespace())
+		logger.Info("Parsed resource", "GVK", u.GroupVersionKind().String(), "Name", u.GetName(), "Namespace", u.GetNamespace(), "operation", operation)
 	}
 
 	return parsedResources, nil
@@ -783,38 +440,32 @@ func (r *Reconciler) getDynamicClientForCluster(ctx context.Context, secretNames
 	return dynamicClient, nil
 }
 
-// handleError is a helper to consistently update status conditions and log errors.
-func (r *Reconciler) handleError(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, reason, messageFormat string, err error) error {
+// Consolidated error handling.
+func (r *Reconciler) updateStatusWithError(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, reason, message string, err error, removeFinalizer bool) error {
 	logger := log.FromContext(ctx).WithValues("cdk8sappproxy", types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace})
-	logger.Error(err, "Reconciliation error", "reason", reason, "messageFormat", messageFormat)
-	conditions.MarkFalse(cdk8sAppProxy, addonsv1alpha1.DeploymentProgressingCondition, reason, clusterv1.ConditionSeverityError, messageFormat, err.Error()) // Pass err.Error() for message
-	if statusUpdateErr := r.Status().Update(ctx, cdk8sAppProxy); statusUpdateErr != nil {
-		logger.Error(statusUpdateErr, "Failed to update status after error", "originalError", err.Error())
+
+	if err != nil {
+		logger.Error(err, message, "reason", reason)
+		conditions.MarkFalse(cdk8sAppProxy, addonsv1alpha1.DeploymentProgressingCondition, reason, clusterv1.ConditionSeverityError, "%s: %v", message, err)
+	} else {
+		logger.Info(message, "reason", reason)
+	}
+
+	if removeFinalizer {
+		controllerutil.RemoveFinalizer(cdk8sAppProxy, Finalizer)
+		if updateErr := r.Update(ctx, cdk8sAppProxy); updateErr != nil {
+			logger.Error(updateErr, "Failed to remove finalizer after error")
+
+			return updateErr
+		}
+		logger.Info("Removed finalizer after error/condition")
+	} else {
+		if statusUpdateErr := r.Status().Update(ctx, cdk8sAppProxy); statusUpdateErr != nil {
+			logger.Error(statusUpdateErr, "Failed to update status after error")
+		}
 	}
 
 	return err
-}
-
-// handleDeleteError is a helper for reconcileDelete to remove finalizer if non-requeueable error occurs.
-func (r *Reconciler) handleDeleteError(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, message string, originalErr error) error {
-	logger := log.FromContext(ctx).WithValues("cdk8sappproxy", types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace})
-	if originalErr != nil {
-		logger.Error(originalErr, message+", proceeding to remove finalizer")
-	} else {
-		logger.Info(message + ", proceeding to remove finalizer")
-	}
-	controllerutil.RemoveFinalizer(cdk8sAppProxy, Finalizer)
-	if err := r.Update(ctx, cdk8sAppProxy); err != nil {
-		logger.Error(err, "Failed to remove finalizer after error on delete")
-
-		return err
-	}
-	logger.Info("Removed finalizer after error/condition on delete")
-	if originalErr != nil {
-		return originalErr
-	}
-
-	return nil
 }
 
 func truncateString(str string, num int) string {
@@ -840,15 +491,32 @@ func getPluralFromKind(kind string) string {
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {
+func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Initialize watch system before setting up the controller
+	r.initializeWatchSystem()
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&addonsv1alpha1.Cdk8sAppProxy{}).
-		WithOptions(options). // Add this line
-		Watches(
-			&clusterv1.Cluster{},
-			handler.EnqueueRequestsFromMapFunc(r.ClusterToCdk8sAppProxyMapper),
-		).
+		Watches(&clusterv1.Cluster{},
+			handler.EnqueueRequestsFromMapFunc(r.ClusterToCdk8sAppProxyMapper)).
 		Complete(r)
+}
+
+func (r *Reconciler) initializeWatchSystem() {
+	// Create event handler with nil manager initially
+	eventHandler := NewEventHandler(r.Client, nil)
+
+	// Create resource watcher
+	resourceWatcher := NewResourceWatcher(eventHandler)
+
+	// Create the actual watch manager
+	watchManager := NewWatchManager(resourceWatcher)
+
+	// Update the event handler with the real manager using the interface method
+	eventHandler.SetWatchManager(watchManager)
+
+	// Set on reconciler
+	r.WatchManager = watchManager
 }
 
 // ClusterToCdk8sAppProxyMapper is a handler.ToRequestsFunc to be used to enqeue requests for Cdk8sAppProxyReconciler.
@@ -909,118 +577,4 @@ func (r *Reconciler) ClusterToCdk8sAppProxyMapper(ctx context.Context, o client.
 	logger.Info("ClusterToCdk8sAppProxyMapper finished", "requestsEnqueued", len(requests))
 
 	return requests
-}
-
-func (r *Reconciler) watchResourceOnTargetCluster(
-	ctx context.Context,
-	targetClient dynamic.Interface,
-	gvk schema.GroupVersionKind,
-	namespace string,
-	name string,
-	parentProxy types.NamespacedName,
-	watchKey string,
-) {
-	logger := log.FromContext(ctx).WithValues(
-		"watchKey", watchKey,
-		"gvk", gvk.String(),
-		"resourceNamespace", namespace,
-		"resourceName", name,
-		"parentProxy", parentProxy.String(),
-	)
-	logger.Info("Starting watch for resource on target cluster")
-
-	gvr := gvk.GroupVersion().WithResource(getPluralFromKind(gvk.Kind))
-
-	watcher, err := targetClient.Resource(gvr).Namespace(namespace).Watch(ctx, metav1.ListOptions{
-		FieldSelector: "metadata.name=" + name,
-	})
-	if err != nil {
-		logger.Error(err, "Failed to start watch for resource")
-		// Clean up the watch from the map if it failed to start
-		if r.ActiveWatches[parentProxy] != nil {
-			if cancelFn, ok := r.ActiveWatches[parentProxy][watchKey]; ok {
-				cancelFn()
-				delete(r.ActiveWatches[parentProxy], watchKey)
-			}
-		}
-
-		return
-	}
-	defer watcher.Stop()
-
-	for {
-		select {
-		case event, ok := <-watcher.ResultChan():
-			if !ok {
-				logger.Info("Watch channel closed for resource. Parent controller will re-trigger reconciliation if needed.")
-				// Remove from activeWatches as this specific watch instance is now defunct.
-				// The parent reconcile loop will re-establish it if the resource still needs to be watched.
-				if r.ActiveWatches[parentProxy] != nil {
-					// Check if the current cancel func is still the one we started with,
-					// though simple deletion is usually fine as reconcileNormal will overwrite.
-					delete(r.ActiveWatches[parentProxy], watchKey)
-				}
-
-				return
-			}
-
-			logger.Info("Received watch event", "type", event.Type) // Avoid logging event.Object directly in production if it's large
-
-			if event.Type == watch.Deleted {
-				logger.Info("Resource deletion detected, triggering re-reconciliation of parent proxy", "parentProxy", parentProxy.String())
-
-				// Create a new context for fetching and updating the parent proxy object.
-				updateCtx := ctx
-				parentProxyObj := &addonsv1alpha1.Cdk8sAppProxy{}
-
-				// Fetch the Cdk8sAppProxy object.
-				if err := r.Get(updateCtx, parentProxy, parentProxyObj); err != nil {
-					logger.Error(err, "Failed to get parent Cdk8sAppProxy for re-reconciliation", "parentProxy", parentProxy.String())
-				} else {
-					// Initialize annotations if nil.
-					if parentProxyObj.Annotations == nil {
-						parentProxyObj.Annotations = make(map[string]string)
-					}
-					// Set an annotation to trigger reconciliation.
-					parentProxyObj.Annotations["cdk8s.addons.cluster.x-k8s.io/reconcile-on-delete-trigger"] = metav1.Now().Format(time.RFC3339Nano)
-
-					// Update the Cdk8sAppProxy object.
-					if err := r.Update(updateCtx, parentProxyObj); err != nil {
-						logger.Error(err, "Failed to update parent Cdk8sAppProxy for re-reconciliation", "parentProxy", parentProxy.String())
-					} else {
-						logger.Info("Successfully updated parent Cdk8sAppProxy to trigger re-reconciliation", "parentProxy", parentProxy.String())
-					}
-				}
-
-				logger.Info("Resource deleted on target cluster. Cancelling this watch and removing from active watches. Parent Cdk8sAppProxy will re-reconcile.")
-				// The resource is deleted. This watch is no longer valid.
-				// Cancel this watch context (which calls defer watcher.Stop())
-				// and remove it from the activeWatches map.
-				// The main reconcile loop of the parent Cdk8sAppProxy will eventually run
-				// (due to a resync period or other events) and will attempt to re-create
-				// the resource and a new watch for it.
-				if r.ActiveWatches[parentProxy] != nil {
-					if cancelFn, ok := r.ActiveWatches[parentProxy][watchKey]; ok {
-						cancelFn() // This will cause the ctx.Done() case to be selected if not already.
-						delete(r.ActiveWatches[parentProxy], watchKey)
-					}
-				}
-				// It's important to return here as this specific watch instance is done.
-				return
-			}
-			// For other events (Added, Modified), we just log and continue watching.
-			// The main reconciliation loop is responsible for desired state enforcement.
-			// This watch is primarily to detect deletions and clean itself up.
-
-		case <-ctx.Done():
-			logger.Info("Watch context cancelled for resource. Stopping watch.")
-			// Context was canceled (likely by reconcileNormal stopping this watch, or reconciler shutting down).
-			// Remove this watch from the activeWatches map.
-			if r.ActiveWatches[parentProxy] != nil {
-				delete(r.ActiveWatches[parentProxy], watchKey)
-			}
-
-			return
-		}
-	}
 }
