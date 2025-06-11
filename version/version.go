@@ -26,7 +26,7 @@ var (
 	gitMinor     string // minor version, numeric possibly followed by "+"
 	gitVersion   string // semantic version, derived by build scripts
 	gitCommit    string // sha1 from git, output of $(git rev-parse HEAD)
-	gitTreeState string // state of git tree, either "clean" or "dirty"
+	gitTreeState string // state of the git tree, either "clean" or "dirty"
 	buildDate    string // build date in ISO8601 format, output of $(date -u +'%Y-%m-%dT%H:%M:%SZ')
 )
 
@@ -43,7 +43,7 @@ type Info struct {
 	Platform     string `json:"platform,omitempty"`
 }
 
-// Get returns version info initialized from defaults and the runtime environment.
+// Get return version info initialized from defaults and the runtime environment.
 func Get() Info {
 	return Info{
 		Major:        gitMajor,

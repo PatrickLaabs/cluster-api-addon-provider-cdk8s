@@ -1,6 +1,7 @@
 package cdk8sappproxy
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -368,4 +369,45 @@ func (r *Reconciler) stopGitPoller(proxyNamespacedName types.NamespacedName, log
 	} else {
 		logger.Info("No active git poller found to stop.")
 	}
+}
+
+func (r *Reconciler) updateRemoteGitHashStatus(ctx context.Context, proxyName types.NamespacedName, remoteCommitHash string, logger logr.Logger) error {
+	latestCdk8sAppProxy := &addonsv1alpha1.Cdk8sAppProxy{}
+	if err := r.Get(ctx, proxyName, latestCdk8sAppProxy); err != nil {
+		logger.Error(err, "Failed to get latest Cdk8sAppProxy before status update")
+
+		return err
+	}
+
+	latestCdk8sAppProxy.Status.LastRemoteGitHash = remoteCommitHash
+	if err := r.Status().Update(ctx, latestCdk8sAppProxy); err != nil {
+		logger.Error(err, "Failed to update Cdk8sAppProxy status with new remote hash")
+
+		return err
+	}
+
+	logger.Info("Successfully updated status with new remote hash. Now triggering reconciliation.")
+
+	return nil
+}
+
+func (gpl *gitProgressLogger) Write(p []byte) (n int, err error) {
+	gpl.buffer = append(gpl.buffer, p...)
+	for {
+		idx := bytes.IndexByte(gpl.buffer, '\n')
+		if idx == -1 {
+			// If buffer gets too large without a newline, log it to prevent OOM
+			if len(gpl.buffer) > 1024 {
+				gpl.logger.Info(strings.TrimSpace(string(gpl.buffer)))
+				gpl.buffer = nil
+			}
+
+			break
+		}
+		line := gpl.buffer[:idx]
+		gpl.buffer = gpl.buffer[idx+1:]
+		gpl.logger.Info(strings.TrimSpace(string(line)))
+	}
+
+	return len(p), nil
 }
