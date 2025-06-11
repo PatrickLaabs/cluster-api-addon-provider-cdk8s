@@ -45,8 +45,6 @@ export GO111MODULE=on
 # Base docker images
 
 DOCKERFILE_CONTAINER_IMAGE ?= docker.io/docker/dockerfile:1.4
-# DEPLOYMENT_BASE_IMAGE ?= gcr.io/distroless/static
-# DEPLOYMENT_BASE_IMAGE_TAG ?= nonroot-${ARCH}
 DEPLOYMENT_BASE_IMAGE ?= ubuntu
 DEPLOYMENT_BASE_IMAGE_TAG ?= 22.04
 BUILD_CONTAINER_ADDITIONAL_ARGS ?=
@@ -220,7 +218,7 @@ endif
 
 PROD_REGISTRY ?= ghcr.io/patricklaabs/cluster-api-addon-provider-cdk8s
 
-STAGING_REGISTRY ?= ghcr.io/patricklaabs/k8s-staging-cluster-api-cdk8s
+STAGING_REGISTRY ?= ghcr.io/patricklaabs/cluster-api-addon-provider-cdk8s
 STAGING_BUCKET ?= artifacts.k8s-staging-cluster-api-cdk8s.appspot.com
 
 # core
@@ -594,7 +592,7 @@ release-staging: ## Build and push container images to the staging bucket
 	REGISTRY=$(STAGING_REGISTRY) $(MAKE) docker-build-all docker-push-all release-alias-tag
 
 .PHONY: release-staging-nightly
-release-staging-nightly: ## Tag and push container images to the staging bucket. Example image tag: cluster-api-helm-controller:nightly_main_20210121
+release-staging-nightly: ## Tag and push container images to the staging bucket. Example image tag: cluster-api-cdk8s-controller:nightly_main_20210121
 	$(eval NEW_RELEASE_ALIAS_TAG := nightly_$(RELEASE_ALIAS_TAG)_$(shell date +'%Y%m%d'))
 	echo $(NEW_RELEASE_ALIAS_TAG)
 	$(MAKE) release-alias-tag TAG=$(RELEASE_ALIAS_TAG) RELEASE_ALIAS_TAG=$(NEW_RELEASE_ALIAS_TAG)
