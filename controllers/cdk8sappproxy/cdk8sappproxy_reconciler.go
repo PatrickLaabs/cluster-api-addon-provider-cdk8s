@@ -561,6 +561,12 @@ func (r *Reconciler) checkGitOrAnnotationTriggers(cdk8sAppProxy *addonsv1alpha1.
 
 func (r *Reconciler) handleSkipApply(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, currentCommitHash string, logger logr.Logger) error {
 	logger.Info("Skipping resource application: no Git changes, no deletion annotation, and all resources verified present.")
+
+	// Re-establish watches for existing resources after controller restart
+	if err := r.reestablishWatchesForExistingResources(ctx, cdk8sAppProxy, logger); err != nil {
+		logger.Error(err, "Failed to re-establish watches for existing resources")
+	}
+
 	cdk8sAppProxy.Status.ObservedGeneration = cdk8sAppProxy.Generation
 	conditions.MarkTrue(cdk8sAppProxy, addonsv1alpha1.DeploymentProgressingCondition)
 
@@ -573,6 +579,66 @@ func (r *Reconciler) handleSkipApply(ctx context.Context, cdk8sAppProxy *addonsv
 		logger.Error(err, "Failed to update status after skipping resource application.")
 
 		return err
+	}
+
+	return nil
+}
+
+func (r *Reconciler) reestablishWatchesForExistingResources(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) error {
+	// Get the source and parse resources to know what should be watched
+	appSourcePath, _, cleanup, err := r.prepareSource(ctx, cdk8sAppProxy, types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}, logger)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	parsedResources, err := r.synthesizeAndParseResources(appSourcePath, logger)
+	if err != nil {
+		return err
+	}
+
+	// Get target clusters
+	selector, err := metav1.LabelSelectorAsSelector(&cdk8sAppProxy.Spec.ClusterSelector)
+	if err != nil {
+		return err
+	}
+
+	var clusterList clusterv1.ClusterList
+	if err := r.List(ctx, &clusterList, client.MatchingLabelsSelector{Selector: selector}); err != nil {
+		return err
+	}
+
+	proxyNamespacedName := types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}
+
+	// Re-establish watches for each resource on each cluster
+	for _, cluster := range clusterList.Items {
+		dynamicClient, err := r.getDynamicClientForCluster(ctx, cluster.Namespace, cluster.Name)
+		if err != nil {
+			logger.Error(err, "Failed to get dynamic client for watch re-establishment", "cluster", cluster.Name)
+
+			continue
+		}
+
+		for _, resource := range parsedResources {
+			gvk := resource.GroupVersionKind()
+			watchKey := string(cluster.GetUID()) + "/" + resource.GetNamespace() + "/" + resource.GetName() + "/" + gvk.String()
+
+			// Check if watch already exists using ActiveWatches map
+			if r.ActiveWatches != nil && r.ActiveWatches[proxyNamespacedName] != nil {
+				if _, exists := r.ActiveWatches[proxyNamespacedName][watchKey]; exists {
+					logger.Info("Watch already exists, skipping re-establishment", "watchKey", watchKey, "cluster", cluster.Name)
+
+					continue
+				}
+			}
+
+			// Start the watch since it doesn't exist
+			if err := r.startResourceWatch(ctx, dynamicClient, gvk, resource.GetNamespace(), resource.GetName(), proxyNamespacedName, watchKey); err != nil {
+				logger.Error(err, "Failed to re-establish watch", "watchKey", watchKey, "cluster", cluster.Name)
+			} else {
+				logger.Info("Re-established watch for existing resource", "watchKey", watchKey, "cluster", cluster.Name)
+			}
+		}
 	}
 
 	return nil
