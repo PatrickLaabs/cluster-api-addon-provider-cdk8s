@@ -2,14 +2,12 @@ apiVersion: addons.cluster.x-k8s.io/v1alpha1
 kind: Cdk8sAppProxy
 metadata:
   name: cdk8s-sample-app
-  namespace: default # Or a namespace where your target CAPI Clusters reside
+  namespace: default
 spec:
   gitRepository:
-    url: https://github.com/PatrickLaabs/cdk8s-sample-deployment
-    # reference: main # Optional: specify a branch, tag, or commit
-    # path: "" # Optional: specify a path within the repository if cdk8s app is not at root
-  clusterSelector:
-    matchLabels:
-      environment: development # Adjust to match labels on your target CAPI Clusters
-  # releaseNamespace: sample-app-namespace # Optional: namespace where the app resources will be deployed on target clusters
-                                      # If not specified, resources are often created in 'default' or as defined by the cdk8s app itself.
+    url: "https://github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/examples/cdk8s-sample-deployment"
+    reference: "main"
+    path: "."
+  clusterSelector: {}
+    # matchLabels:
+      # environment: development

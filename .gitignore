@@ -38,3 +38,6 @@ _artifacts
 
 # Temp files
 tmp/
+
+# Release Files
+out/

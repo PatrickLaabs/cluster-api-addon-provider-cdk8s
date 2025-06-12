@@ -1,7 +1,6 @@
 package v1alpha1
 
 import (
-	"context"
 	"testing"
 
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -90,12 +89,7 @@ func TestCdk8sAppProxy_Default(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			err := tt.proxy.Default(ctx, tt.proxy)
-			if err != nil {
-				t.Errorf("Default() error = %v", err)
-				return
-			}
+			tt.proxy.Default()
 
 			if tt.proxy.Spec.GitRepository != nil && tt.expected.Spec.GitRepository != nil {
 				if tt.proxy.Spec.GitRepository.Reference != tt.expected.Spec.GitRepository.Reference {
@@ -177,21 +171,19 @@ func TestCdk8sAppProxy_ValidateCreate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			warnings, err := tt.proxy.ValidateCreate(ctx, tt.proxy)
+			warnings, err := tt.proxy.ValidateCreate()
 
 			if tt.wantError {
 				if err == nil {
 					t.Errorf("ValidateCreate() expected error, got nil")
+
 					return
 				}
 				if tt.errorMsg != "" && err.Error() != "validation failed: ["+tt.errorMsg+"]" {
 					t.Errorf("ValidateCreate() error = %v, want error containing %v", err.Error(), tt.errorMsg)
 				}
-			} else {
-				if err != nil {
-					t.Errorf("ValidateCreate() unexpected error = %v", err)
-				}
+			} else if err != nil {
+				t.Errorf("ValidateCreate() unexpected error = %v", err)
 			}
 
 			// Warnings should always be nil in our implementation
@@ -248,8 +240,7 @@ func TestCdk8sAppProxy_ValidateUpdate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			warnings, err := tt.newProxy.ValidateUpdate(ctx, tt.oldProxy, tt.newProxy)
+			warnings, err := tt.newProxy.ValidateUpdate(tt.oldProxy)
 
 			if tt.wantError {
 				if err == nil {
@@ -278,8 +269,7 @@ func TestCdk8sAppProxy_ValidateDelete(t *testing.T) {
 		},
 	}
 
-	ctx := context.Background()
-	warnings, err := proxy.ValidateDelete(ctx, proxy)
+	warnings, err := proxy.ValidateDelete()
 
 	if err != nil {
 		t.Errorf("ValidateDelete() unexpected error = %v", err)
@@ -335,15 +325,17 @@ func TestCdk8sAppProxy_validateCdk8sAppProxy(t *testing.T) {
 
 			if (err != nil) != tt.wantError {
 				t.Errorf("validateCdk8sAppProxy() error = %v, wantError %v", err, tt.wantError)
+
 				return
 			}
 
 			// Compare warnings properly
-			if tt.wantWarnings == nil && warnings != nil {
+			switch {
+			case tt.wantWarnings == nil && warnings != nil:
 				t.Errorf("validateCdk8sAppProxy() warnings = %v, want nil", warnings)
-			} else if tt.wantWarnings != nil && warnings == nil {
+			case tt.wantWarnings != nil && warnings == nil:
 				t.Errorf("validateCdk8sAppProxy() warnings = nil, want %v", tt.wantWarnings)
-			} else if tt.wantWarnings != nil && warnings != nil {
+			case tt.wantWarnings != nil && warnings != nil:
 				if len(warnings) != len(tt.wantWarnings) {
 					t.Errorf("validateCdk8sAppProxy() warnings length = %d, want %d", len(warnings), len(tt.wantWarnings))
 				} else {

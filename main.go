@@ -24,7 +24,7 @@ import (
 	"time"
 
 	addonsv1alpha1 "github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/api/v1alpha1"
-	"github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/controllers"
+	caapccontroller "github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/controllers/cdk8sappproxy"
 	"github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/version"
 	"github.com/spf13/pflag"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -44,7 +44,6 @@ import (
 	"sigs.k8s.io/cluster-api/util/flags"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
-	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 )
@@ -206,12 +205,13 @@ func main() {
 
 	ctx := ctrl.SetupSignalHandler()
 
-	if err = (&controllers.Cdk8sAppProxyReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
-		Recorder:      mgr.GetEventRecorderFor("cdk8sappproxy-controller"),
+	if err = (&caapccontroller.Reconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("cdk8sappproxy-controller"),
+		// Initialize legacy maps for gradual migration
 		ActiveWatches: make(map[types.NamespacedName]map[string]context.CancelFunc),
-	}).SetupWithManager(mgr, controller.Options{MaxConcurrentReconciles: cdk8sAppProxyConcurrency}); err != nil {
+	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Cdk8sAppProxy")
 		os.Exit(1)
 	}
