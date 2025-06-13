@@ -56,10 +56,6 @@ type Cdk8sAppProxySpec struct {
 	// +kubebuilder:validation:Optional
 	GitRepository *GitRepositorySpec `json:"gitRepository,omitempty"`
 
-	// Values is a string containing the values to be passed to the cdk8s app
-	// +kubebuilder:validation:Optional
-	Values string `json:"values,omitempty"`
-
 	// ClusterSelector selects the clusters to deploy the cdk8s app to.
 	// +kubebuilder:validation:Required
 	ClusterSelector metav1.LabelSelector `json:"clusterSelector"`

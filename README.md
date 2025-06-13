@@ -8,10 +8,6 @@
 
 # Cluster API Add-on Provider for Cdk8s
 
-### 👋 Welcome! Here are some links to help you get started:
-
-- [Project design outline](https://github.com/kubernetes-sigs/cluster-api/blob/main/docs/proposals/20220712-cluster-api-addon-orchestration.md)
-
 ## ✨ What is Cluster API Add-on Provider for Cdk8s?
 
 Cluster API Add-on Provider for Cdk8s extends Cluster API by managing the installation, configuration, upgrade, and deletion of cluster add-ons using cdk8s applications. This provider is based on the [Cluster API Add-on Orchestration Proposal](https://github.com/kubernetes-sigs/cluster-api/blob/main/docs/proposals/20220712-cluster-api-addon-orchestration.md), a larger effort to bring orchestration for add-ons to CAPI by using existing package management tools.
@@ -47,14 +43,30 @@ apiVersion: addons.cluster.x-k8s.io/v1alpha1
 kind: Cdk8sAppProxy
 metadata:
   name: cdk8s-sample-app
-  namespace: caapc-system
+  namespace: default
 spec:
   gitRepository:
-    url: https://github.com/PatrickLaabs/cdk8s-sample-deployment
-    # reference: main # Optional: specify a branch, tag, or commit
-    # path: "" # Optional: specify a path within the repository if cdk8s app is not at root
-  clusterSelector:
-    matchLabels: {}
+    url: "https://github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/examples/cdk8s-sample-deployment"
+    reference: "main"
+    path: "."
+    # authSecretRef:
+    #   name: git-credentials
+  clusterSelector: {}
+    # matchLabels:
+      # environment: development
+# ---
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: git-credentials
+#   namespace: default
+# type: Opaque
+# data:
+#   # Base64 encoded username
+#   username: <base64-encoded-username>
+#   # Base64 encoded password/token
+#   password: <base64-encoded-password-or-token>
+
 ```
 
 ### Cdk8sAppProxySpec Fields

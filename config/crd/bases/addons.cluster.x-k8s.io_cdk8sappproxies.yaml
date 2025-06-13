@@ -140,10 +140,6 @@ spec:
                   LocalPath is the local filesystem path to the cdk8s app.
                   One of LocalPath or GitRepository must be specified.
                 type: string
-              values:
-                description: Values is a string containing the values to be passed
-                  to the cdk8s app
-                type: string
             required:
             - clusterSelector
             type: object

@@ -103,7 +103,11 @@ func (r *Reconciler) reconcileDelete(ctx context.Context, cdk8sAppProxy *addonsv
 	}
 
 	// Clean up watches and remove finalizer
-	return r.finalizeDeletion(ctx, cdk8sAppProxy, proxyNamespacedName, logger)
+	if err := r.finalizeDeletion(ctx, cdk8sAppProxy, proxyNamespacedName, logger); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
 }
 
 func (r *Reconciler) reconcileNormal(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy) (ctrl.Result, error) {
