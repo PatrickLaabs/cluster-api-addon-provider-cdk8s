@@ -206,11 +206,10 @@ func main() {
 	ctx := ctrl.SetupSignalHandler()
 
 	if err = (&caapccontroller.Reconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("cdk8sappproxy-controller"),
-		// Initialize legacy maps for gradual migration
-		ActiveWatches: make(map[types.NamespacedName]map[string]context.CancelFunc),
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		Recorder:         mgr.GetEventRecorderFor("cdk8sappproxy-controller"),
+		ActiveGitPollers: make(map[types.NamespacedName]context.CancelFunc),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Cdk8sAppProxy")
 		os.Exit(1)

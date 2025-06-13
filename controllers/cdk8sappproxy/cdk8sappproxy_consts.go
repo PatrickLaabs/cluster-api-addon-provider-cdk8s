@@ -18,4 +18,8 @@ const (
 )
 
 // gitPollInterval is the interval at which the cdk8sappproxy controller polls the git repository for changes.
-const gitPollInterval = 1 * time.Minute
+const (
+	gitPollInterval      = 1 * time.Minute
+	consecutiveErrors    = 0
+	maxConsecutiveErrors = 5
+)
