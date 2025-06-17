@@ -95,14 +95,13 @@ func (r *Reconciler) getCdk8sAppProxyForPolling(ctx context.Context, proxyName t
 	return cdk8sAppProxy, nil
 }
 
-// checkIfResourceExists checks if a given resource exists on the target cluster. It uses a dynamic client to make the check.
-func checkIfResourceExists(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource, namespace string, name string) (bool, error) {
+func (r *Reconciler) checkIfResourceExists(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource, namespace string, name string) (bool, error) {
 	resourceGetter := dynClient.Resource(gvr)
 	if namespace != "" {
 		_, err := resourceGetter.Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			if apierrors.IsNotFound(err) {
-				return false, nil // Resource does not exist
+				return false, nil
 			}
 			// Some other error occurred
 			return false, errors.Wrapf(err, "failed to get namespaced resource %s/%s with GVR %s", namespace, name, gvr.String())
@@ -150,14 +149,13 @@ func (r *Reconciler) synthesizeCdk8sApp(appSourcePath string, logger logr.Logger
 	}
 
 	logger.Info("cdk8s synth successful", "outputSummary", truncateString(string(output), 200), "operation", operation)
-	logger.V(1).Info("cdk8s synth full output", "output", string(output), "operation", operation)
+	// logger.V(1).Info("cdk8s synth full output", "output", string(output), "operation", operation)
 
 	return nil
 }
 
 func (r *Reconciler) findManifestFiles(appSourcePath string, logger logr.Logger, operation string) ([]string, error) {
 	distPath := filepath.Join(appSourcePath, "dist")
-	logger.Info("Looking for manifests for deletion", "distPath", distPath, "operation", operation)
 
 	var manifestFiles []string
 	walkErr := filepath.WalkDir(distPath, func(path string, d fs.DirEntry, err error) error {
@@ -186,56 +184,45 @@ func (r *Reconciler) parseManifestFiles(manifestFiles []string, logger logr.Logg
 	var parsedResources []*unstructured.Unstructured
 
 	for _, manifestFile := range manifestFiles {
-		resources, err := r.parseManifestFile(manifestFile, logger, operation)
-		if err != nil {
-			return nil, err
+		logger.Info("Processing manifest file", "file", manifestFile, "operation", operation)
+
+		fileContent, readErr := os.ReadFile(manifestFile)
+		if readErr != nil {
+			logger.Error(readErr, "Failed to read manifest file", "file", manifestFile, "operation", operation)
+
+			return nil, readErr
 		}
-		parsedResources = append(parsedResources, resources...)
+
+		yamlDecoder := k8syaml.NewYAMLOrJSONDecoder(bytes.NewReader(fileContent), 100)
+
+		for {
+			var rawObj runtime.RawExtension
+			if err := yamlDecoder.Decode(&rawObj); err != nil {
+				if err.Error() == "EOF" {
+					break
+				}
+				logger.Error(err, "Failed to decode YAML from manifest file", "file", manifestFile, "operation", operation)
+
+				return nil, err
+			}
+
+			if rawObj.Raw == nil {
+				continue
+			}
+
+			u := &unstructured.Unstructured{}
+			if _, _, err := unstructured.UnstructuredJSONScheme.Decode(rawObj.Raw, nil, u); err != nil {
+				logger.Error(err, "Failed to decode RawExtension to Unstructured", "file", manifestFile, "operation", operation)
+
+				return nil, err
+			}
+
+			parsedResources = append(parsedResources, u)
+			logger.Info("Parsed resource", "GVK", u.GroupVersionKind().String(), "Name", u.GetName(), "Namespace", u.GetNamespace(), "operation", operation)
+		}
 	}
 
 	logger.Info("Total resources parsed", "count", len(parsedResources), "operation", operation)
-
-	return parsedResources, nil
-}
-
-func (r *Reconciler) parseManifestFile(manifestFile string, logger logr.Logger, operation string) ([]*unstructured.Unstructured, error) {
-	logger.Info("Processing manifest file", "file", manifestFile, "operation", operation)
-
-	fileContent, readErr := os.ReadFile(manifestFile)
-	if readErr != nil {
-		logger.Error(readErr, "Failed to read manifest file", "file", manifestFile, "operation", operation)
-
-		return nil, readErr
-	}
-
-	var parsedResources []*unstructured.Unstructured
-	yamlDecoder := k8syaml.NewYAMLOrJSONDecoder(bytes.NewReader(fileContent), 100)
-
-	for {
-		var rawObj runtime.RawExtension
-		if err := yamlDecoder.Decode(&rawObj); err != nil {
-			if err.Error() == "EOF" {
-				break
-			}
-			logger.Error(err, "Failed to decode YAML from manifest file", "file", manifestFile, "operation", operation)
-
-			return nil, err
-		}
-
-		if rawObj.Raw == nil {
-			continue
-		}
-
-		u := &unstructured.Unstructured{}
-		if _, _, err := unstructured.UnstructuredJSONScheme.Decode(rawObj.Raw, nil, u); err != nil {
-			logger.Error(err, "Failed to decode RawExtension to Unstructured", "file", manifestFile, "operation", operation)
-
-			return nil, err
-		}
-
-		parsedResources = append(parsedResources, u)
-		logger.Info("Parsed resource", "GVK", u.GroupVersionKind().String(), "Name", u.GetName(), "Namespace", u.GetNamespace(), "operation", operation)
-	}
 
 	return parsedResources, nil
 }
@@ -249,9 +236,31 @@ func (r *Reconciler) deleteResourcesFromClusters(ctx context.Context, cdk8sAppPr
 
 	// Delete resources from each cluster
 	for _, cluster := range clusterList.Items {
-		if err := r.deleteResourcesFromSingleCluster(ctx, cdk8sAppProxy, cluster, parsedResources, logger); err != nil {
+		clusterLogger := logger.WithValues("targetCluster", cluster.Name)
+
+		dynamicClient, err := r.getDynamicClientForCluster(ctx, cdk8sAppProxy.Namespace, cluster.Name)
+		if err != nil {
+			clusterLogger.Error(err, "Failed to get dynamic client for cluster during deletion, skipping this cluster")
 			// Log error but continue with other clusters
-			logger.Error(err, "Failed to delete resources from cluster", "cluster", cluster.Name)
+			continue
+		}
+
+		clusterLogger.Info("Successfully created dynamic client for cluster deletion")
+
+		for _, resource := range parsedResources {
+			gvr := resource.GroupVersionKind().GroupVersion().WithResource(getPluralFromKind(resource.GetKind()))
+			clusterLogger.Info("Deleting resource from cluster", "GVK", resource.GroupVersionKind().String(), "Name", resource.GetName(), "Namespace", resource.GetNamespace())
+
+			err := dynamicClient.Resource(gvr).Namespace(resource.GetNamespace()).Delete(ctx, resource.GetName(), metav1.DeleteOptions{})
+
+			switch {
+			case err != nil && !apierrors.IsNotFound(err):
+				clusterLogger.Error(err, "Failed to delete resource from cluster", "resourceName", resource.GetName())
+			case apierrors.IsNotFound(err):
+				clusterLogger.Info("Resource already deleted from cluster", "resourceName", resource.GetName())
+			case err == nil:
+				clusterLogger.Info("Successfully deleted resource from cluster", "resourceName", resource.GetName())
+			}
 		}
 	}
 
@@ -283,89 +292,31 @@ func (r *Reconciler) getTargetClustersForDeletion(ctx context.Context, cdk8sAppP
 	return clusterList, nil
 }
 
-func (r *Reconciler) deleteResourcesFromSingleCluster(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, cluster clusterv1.Cluster, parsedResources []*unstructured.Unstructured, logger logr.Logger) error {
-	clusterLogger := logger.WithValues("targetCluster", cluster.Name)
-	clusterLogger.Info("Deleting resources from cluster")
+func (r *Reconciler) finalizeDeletion(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, proxyNamespacedName types.NamespacedName, logger logr.Logger) error {
+	logger.Info("Starting finalization process")
 
-	dynamicClient, err := r.getDynamicClientForCluster(ctx, cdk8sAppProxy.Namespace, cluster.Name)
-	if err != nil {
-		clusterLogger.Error(err, "Failed to get dynamic client for cluster during deletion, skipping this cluster")
-
-		return err
-	}
-
-	clusterLogger.Info("Successfully created dynamic client for cluster deletion")
-
-	for _, resource := range parsedResources {
-		if err := r.deleteResourceFromCluster(ctx, dynamicClient, resource, clusterLogger); err != nil {
-			// Log but continue with other resources
-			clusterLogger.Error(err, "Failed to delete resource from cluster", "resourceName", resource.GetName())
-		}
-	}
-
-	return nil
-}
-
-func (r *Reconciler) deleteResourceFromCluster(ctx context.Context, dynamicClient dynamic.Interface, resource *unstructured.Unstructured, logger logr.Logger) error {
-	gvr := resource.GroupVersionKind().GroupVersion().WithResource(getPluralFromKind(resource.GetKind()))
-	logger.Info("Deleting resource from cluster", "GVK", resource.GroupVersionKind().String(), "Name", resource.GetName(), "Namespace", resource.GetNamespace())
-
-	err := dynamicClient.Resource(gvr).Namespace(resource.GetNamespace()).Delete(ctx, resource.GetName(), metav1.DeleteOptions{})
-
-	switch {
-	case err != nil && !apierrors.IsNotFound(err):
-		logger.Error(err, "Failed to delete resource from cluster", "resourceName", resource.GetName())
-
-		return err
-	case apierrors.IsNotFound(err):
-		logger.Info("Resource already deleted from cluster", "resourceName", resource.GetName())
-	case err == nil:
-		logger.Info("Successfully deleted resource from cluster", "resourceName", resource.GetName())
-	}
-
-	return nil
-}
-
-func (r *Reconciler) finalizeDeletion(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, proxyNamespacedName types.NamespacedName, logger logr.Logger) (ctrl.Result, error) {
-	// Cancel any active watches for this Cdk8sAppProxy
-	r.cancelActiveWatches(proxyNamespacedName, logger)
+	// Cancel any active watches for this Cdk8sAppProxy using the new WatchManager
+	logger.Info("Cleaning up active watches for Cdk8sAppProxy before deletion")
+	r.WatchManager.CleanupWatches(proxyNamespacedName)
+	logger.Info("Completed cleanup of active watches")
 
 	// Remove finalizer
-	return r.removeFinalizer(ctx, cdk8sAppProxy, logger)
-}
-
-func (r *Reconciler) cancelActiveWatches(proxyNamespacedName types.NamespacedName, logger logr.Logger) {
-	if watchesForProxy, ok := r.ActiveWatches[proxyNamespacedName]; ok {
-		logger.Info("Cancelling active watches for Cdk8sAppProxy before deletion", "count", len(watchesForProxy))
-		for watchKey, cancelFunc := range watchesForProxy {
-			logger.Info("Cancelling watch", "watchKey", watchKey)
-			cancelFunc() // Stop the goroutine and its associated Kubernetes watch
-		}
-		// After all, watches for this proxy are canceled, remove its entry from the main map
-		delete(r.ActiveWatches, proxyNamespacedName)
-		logger.Info("Removed Cdk8sAppProxy entry from ActiveWatches map")
-	} else {
-		logger.Info("No active watches found for this Cdk8sAppProxy to cancel.")
-	}
-}
-
-func (r *Reconciler) removeFinalizer(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (ctrl.Result, error) {
 	logger.Info("Finished deletion logic, removing finalizer")
 	controllerutil.RemoveFinalizer(cdk8sAppProxy, Finalizer)
 	if err := r.Update(ctx, cdk8sAppProxy); err != nil {
 		logger.Error(err, "Failed to remove finalizer")
 
-		return ctrl.Result{}, err
+		return err
 	}
 	logger.Info("Finalizer removed successfully")
 
-	return ctrl.Result{}, nil
+	return nil
 }
 
 func (r *Reconciler) getDynamicClientForCluster(ctx context.Context, secretNamespace, clusterName string) (dynamic.Interface, error) {
 	logger := log.FromContext(ctx).WithValues("secretNamespace", secretNamespace, "clusterName", clusterName)
 	kubeconfigSecretName := clusterName + "-kubeconfig"
-	logger.Info("Attempting to get Kubeconfig secret", "secretName", kubeconfigSecretName)
+
 	kubeconfigSecret := &corev1.Secret{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: secretNamespace, Name: kubeconfigSecretName}, kubeconfigSecret); err != nil {
 		logger.Error(err, "Failed to get Kubeconfig secret")
@@ -386,7 +337,6 @@ func (r *Reconciler) getDynamicClientForCluster(ctx context.Context, secretNames
 
 		return nil, errors.Wrapf(err, "failed to create REST config from kubeconfig for cluster %s", clusterName)
 	}
-	logger.Info("Successfully created REST config")
 	dynamicClient, err := dynamic.NewForConfig(restConfig)
 	if err != nil {
 		logger.Error(err, "Failed to create dynamic client")
@@ -450,31 +400,14 @@ func getPluralFromKind(kind string) string {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Initialize a watch system before setting up the controller
-	r.initializeWatchSystem()
+	// Initialize the new simplified watch system
+	r.WatchManager = NewResourceWatchManager(mgr.GetClient())
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&addonsv1alpha1.Cdk8sAppProxy{}).
 		Watches(&clusterv1.Cluster{},
 			handler.EnqueueRequestsFromMapFunc(r.ClusterToCdk8sAppProxyMapper)).
 		Complete(r)
-}
-
-func (r *Reconciler) initializeWatchSystem() {
-	// Create event handler with nil manager initially
-	eventHandler := NewEventHandler(r.Client, nil)
-
-	// Create resource watcher
-	resourceWatcher := NewResourceWatcher(eventHandler)
-
-	// Create the actual watch manager
-	watchManager := NewWatchManager(resourceWatcher)
-
-	// Update the event handler with the real manager using the interface method
-	eventHandler.SetWatchManager(watchManager)
-
-	// Set on reconciler
-	r.WatchManager = watchManager
 }
 
 // ClusterToCdk8sAppProxyMapper is a handler.ToRequestsFunc to be used to enqeue requests for Cdk8sAppProxyReconciler.

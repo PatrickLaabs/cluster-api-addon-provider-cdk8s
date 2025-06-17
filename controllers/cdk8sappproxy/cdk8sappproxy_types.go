@@ -22,7 +22,6 @@ type Reconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 
-	WatchManager     WatchManager
-	ActiveWatches    map[types.NamespacedName]map[string]context.CancelFunc
-	activeGitPollers map[types.NamespacedName]context.CancelFunc
+	WatchManager     *ResourceWatchManager
+	ActiveGitPollers map[types.NamespacedName]context.CancelFunc
 }
