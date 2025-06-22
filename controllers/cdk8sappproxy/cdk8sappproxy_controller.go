@@ -137,20 +137,25 @@ func (r *Reconciler) synthesizeAndParseResources(appSourcePath string, logger lo
 }
 
 func (r *Reconciler) synthesizeCdk8sApp(appSourcePath string, logger logr.Logger, operation string) error {
-	logger.Info("Synthesizing cdk8s application", "effectiveSourcePath", appSourcePath, "operation", operation)
+	logger.Info("Synthesizing cdk8s application", "effectiveSourcePath", appSourcePath, "operation", OperationSynthesize)
+
+	npmInstall := cmdRunnerFactory("npm", "install")
+	npmInstall.SetDir(appSourcePath)
+	output, err := npmInstall.CombinedOutput()
+	if err != nil {
+		logger.Error(err, "npm installation failed", "output", string(output), "operation:", OperationNpmInstall)
+	}
 
 	synthCmd := cmdRunnerFactory("cdk8s", "synth")
 	synthCmd.SetDir(appSourcePath)
 	output, synthErr := synthCmd.CombinedOutput()
 	if synthErr != nil {
-		logger.Error(synthErr, "cdk8s synth failed", "output", string(output), "operation", operation)
+		logger.Error(synthErr, "cdk8s synth failed", "output", string(output), "operation", OperationSynthesize)
 
 		return synthErr
 	}
 
 	logger.Info("cdk8s synth successful", "outputSummary", truncateString(string(output), 200), "operation", operation)
-	// logger.V(1).Info("cdk8s synth full output", "output", string(output), "operation", operation)
-
 	return nil
 }
 

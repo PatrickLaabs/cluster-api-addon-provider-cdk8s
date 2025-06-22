@@ -71,8 +71,7 @@ spec:
 
 ### Cdk8sAppProxySpec Fields
 
-- **localPath**: (Optional) The local filesystem path to the cdk8s application directory. One of `localPath` or `gitRepository` must be specified.
-- **gitRepository**: (Optional) Specifies the Git repository for the cdk8s application. One of `localPath` or `gitRepository` must be specified.
+- **gitRepository**: (Optional) Specifies the Git repository for the cdk8s application. `gitRepository` must be specified.
     - **url**: (Required) The Git repository URL.
     - **reference**: (Optional) The Git reference (branch, tag, or commit) to check out.
     - **path**: (Optional) The path within the repository where the cdk8s application is located. Defaults to the root.

@@ -29,13 +29,17 @@ type GitRepositorySpec struct {
 	URL string `json:"url"`
 
 	// Reference is the git reference (branch, tag, or commit).
-	// +kubebuilder:validation:Optional
-	Reference string `json:"reference,omitempty"`
+	// +kubebuilder:validation:Required
+	Reference string `json:"reference"`
+
+	// ReferencePollInterval
+	// +kubebuilder:validation:optional
+	ReferencePollInterval *metav1.Duration `json:"referencePollInterval,omitempty"`
 
 	// Path is the path within the repository where the cdk8s application is located.
 	// Defaults to the root of the repository.
-	// +kubebuilder:validation:Optional
-	Path string `json:"path,omitempty"`
+	// +kubebuilder:validation:Required
+	Path string `json:"path"`
 
 	// AuthSecretRef is a reference to a Secret in the same namespace
 	// containing authentication credentials for the Git repository.
@@ -46,13 +50,7 @@ type GitRepositorySpec struct {
 
 // Cdk8sAppProxySpec defines the desired state of Cdk8sAppProxy.
 type Cdk8sAppProxySpec struct {
-	// LocalPath is the local filesystem path to the cdk8s app.
-	// One of LocalPath or GitRepository must be specified.
-	// +kubebuilder:validation:Optional
-	LocalPath string `json:"localPath,omitempty"`
-
 	// GitRepository specifies the Git repository for the cdk8s app.
-	// One of LocalPath or GitRepository must be specified.
 	// +kubebuilder:validation:Optional
 	GitRepository *GitRepositorySpec `json:"gitRepository,omitempty"`
 
