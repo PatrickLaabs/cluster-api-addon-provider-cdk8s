@@ -128,6 +128,11 @@ spec:
                   reference:
                     description: Reference is the git reference (branch, tag, or commit).
                     type: string
+                  referencePollInterval:
+                    description: |-
+                      ReferencePollInterval polls the defined git repository for changes.
+                      Defaults to 5 min.
+                    type: string
                   url:
                     description: URL is the git repository URL.
                     type: string

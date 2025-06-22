@@ -96,11 +96,27 @@ func (r *Reconciler) cloneGitRepository(ctx context.Context, cdk8sAppProxy *addo
 	return nil
 }
 
+func getPollInterval(c *addonsv1alpha1.Cdk8sAppProxy) time.Duration {
+	if c.Spec.GitRepository != nil && c.Spec.GitRepository.ReferencePollInterval != nil {
+		return c.Spec.GitRepository.ReferencePollInterval.Duration
+	}
+	return 5 * time.Minute // default
+}
+
 // pollGitRepository periodically checks the remote git repository for changes.
 func (r *Reconciler) pollGitRepository(ctx context.Context, proxyName types.NamespacedName) {
 	logger := log.FromContext(ctx).WithValues("cdk8sappproxy", proxyName.String(), "goroutine", "pollGitRepository")
 
-	ticker := time.NewTicker(gitPollInterval)
+	cdk8sAppProxy := &addonsv1alpha1.Cdk8sAppProxy{}
+	err := r.Get(ctx, proxyName, cdk8sAppProxy)
+	if err != nil {
+		logger.Error(err, "Failed to get cdk8sAppProxy")
+
+		return
+	}
+	pollInterval := getPollInterval(cdk8sAppProxy)
+
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	for {
