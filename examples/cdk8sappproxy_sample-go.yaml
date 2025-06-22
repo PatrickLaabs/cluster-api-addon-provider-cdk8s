@@ -7,6 +7,7 @@ spec:
   gitRepository:
     url: "https://github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s"
     reference: "main"
+    referencePollInterval: '5'
     path: "examples/cdk8s-sample-deployment"
     # authSecretRef:
     #   name: git-credentials

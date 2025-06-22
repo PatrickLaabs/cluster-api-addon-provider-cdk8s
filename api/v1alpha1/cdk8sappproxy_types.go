@@ -32,7 +32,8 @@ type GitRepositorySpec struct {
 	// +kubebuilder:validation:Required
 	Reference string `json:"reference"`
 
-	// ReferencePollInterval
+	// ReferencePollInterval polls the defined git repository for changes.
+	// Defaults to 5 min.
 	// +kubebuilder:validation:optional
 	ReferencePollInterval *metav1.Duration `json:"referencePollInterval,omitempty"`
 
