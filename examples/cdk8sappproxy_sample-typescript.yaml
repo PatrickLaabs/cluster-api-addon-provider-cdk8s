@@ -1,0 +1,27 @@
+apiVersion: addons.cluster.x-k8s.io/v1alpha1
+kind: Cdk8sAppProxy
+metadata:
+  name: cdk8s-sample-app-go
+  namespace: default
+spec:
+  gitRepository:
+    url: "https://github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s"
+    reference: "main"
+    path: "examples/cdk8s-sample-deployment"
+    # authSecretRef:
+    #   name: git-credentials
+  clusterSelector: {}
+    # matchLabels:
+      # environment: development
+# ---
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: git-credentials
+#   namespace: default
+# type: Opaque
+# data:
+#   # Base64 encoded username
+#   username: <base64-encoded-username>
+#   # Base64 encoded password/token
+#   password: <base64-encoded-password-or-token>

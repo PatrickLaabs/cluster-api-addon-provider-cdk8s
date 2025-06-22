@@ -15,6 +15,7 @@ const (
 	OperationFindFiles  = "findFiles"
 	OperationSynthesize = "synthesize"
 	OperationApply      = "apply"
+	OperationNpmInstall = "npmInstall"
 )
 
 // gitPollInterval is the interval at which the cdk8sappproxy controller polls the git repository for changes.

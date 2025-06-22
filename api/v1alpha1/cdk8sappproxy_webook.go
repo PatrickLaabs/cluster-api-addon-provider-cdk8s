@@ -68,13 +68,8 @@ func (c *Cdk8sAppProxy) ValidateDelete() (admission.Warnings, error) {
 func (c *Cdk8sAppProxy) validateCdk8sAppProxy() (admission.Warnings, error) {
 	var allErrs []error
 
-	// Validate that either LocalPath or GitRepository is specified, but not both
-	if c.Spec.LocalPath != "" && c.Spec.GitRepository != nil {
-		allErrs = append(allErrs, fmt.Errorf("only one of localPath or gitRepository can be specified"))
-	}
-
-	if c.Spec.LocalPath == "" && c.Spec.GitRepository == nil {
-		allErrs = append(allErrs, fmt.Errorf("either localPath or gitRepository must be specified"))
+	if c.Spec.GitRepository == nil {
+		allErrs = append(allErrs, fmt.Errorf("gitRepository must be specified"))
 	}
 
 	// Validate GitRepository fields if specified

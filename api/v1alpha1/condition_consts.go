@@ -27,7 +27,7 @@ const (
 	GitCloneFailedReason = "GitCloneFailed"
 	// GitCheckoutFailedReason indicates that git checkout operation failed.
 	GitCheckoutFailedReason = "GitCheckoutFailed"
-	// SourceNotSpecifiedReason indicates that no source (GitRepository or LocalPath) was specified.
+	// SourceNotSpecifiedReason indicates that no source (GitRepository) was specified.
 	SourceNotSpecifiedReason = "SourceNotSpecified"
 	// Cdk8sSynthFailedReason indicates that cdk8s synth operation failed.
 	Cdk8sSynthFailedReason = "Cdk8sSynthFailed"

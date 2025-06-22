@@ -334,8 +334,8 @@ func (r *Reconciler) checkGitOrAnnotationTriggers(cdk8sAppProxy *addonsv1alpha1.
 			return true
 		}
 		logger.Info("No new Git changes detected (current clone matches last processed, and no pending poller detection).", "commitHash", currentCommitHash, "reference", gitSpecRef)
-	} else if cdk8sAppProxy.Spec.LocalPath != "" && cdk8sAppProxy.Status.ObservedGeneration == 0 {
-		logger.Info("Initial processing for LocalPath or source type without explicit change detection. Proceeding with cdk8s synth and apply.")
+	} else if cdk8sAppProxy.Status.ObservedGeneration == 0 {
+		logger.Info("Initial processing for source type without explicit change detection. Proceeding with cdk8s synth and apply.")
 
 		return true
 	}

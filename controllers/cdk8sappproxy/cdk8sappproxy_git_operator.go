@@ -143,11 +143,9 @@ func (r *Reconciler) pollGitRepositoryOnce(ctx context.Context, proxyName types.
 func (r *Reconciler) prepareSourceForDeletion(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (string, func(), error) {
 	if cdk8sAppProxy.Spec.GitRepository != nil && cdk8sAppProxy.Spec.GitRepository.URL != "" {
 		return r.prepareGitSourceForDeletion(ctx, cdk8sAppProxy, logger)
-	} else if cdk8sAppProxy.Spec.LocalPath != "" {
-		return cdk8sAppProxy.Spec.LocalPath, func() {}, nil
 	}
 
-	err := errors.New("neither GitRepository nor LocalPath specified, cannot determine resources to delete")
+	err := errors.New("GitRepository not specified, cannot determine resources to delete")
 	logger.Info(err.Error())
 	_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.SourceNotSpecifiedReason, "Cannot determine resources to delete during deletion", err, true)
 
@@ -337,11 +335,6 @@ func (r *Reconciler) prepareSource(ctx context.Context, cdk8sAppProxy *addonsv1a
 			logger.Info("Updated cdk8sAppProxy.Status.LastRemoteGitHash with the latest commit hash from remote", "lastRemoteGitHash", currentCommitHash)
 		}
 
-	case cdk8sAppProxy.Spec.LocalPath != "":
-		logger.Info("Determined source type: LocalPath", "path", cdk8sAppProxy.Spec.LocalPath)
-		appSourcePath = cdk8sAppProxy.Spec.LocalPath
-		cleanupFunc = func() {}
-
 		// Stop any existing git poller for a local path
 		if cancel, ok := r.ActiveGitPollers[proxyNamespacedName]; ok {
 			logger.Info("GitRepository spec removed or empty, stopping existing git poller.")
@@ -351,14 +344,14 @@ func (r *Reconciler) prepareSource(ctx context.Context, cdk8sAppProxy *addonsv1a
 
 	default:
 		err := errors.New("no source specified")
-		logger.Error(err, "No source specified (neither GitRepository nor LocalPath)")
+		logger.Error(err, "No source specified")
 		if cancel, ok := r.ActiveGitPollers[proxyNamespacedName]; ok {
 			logger.Info("Source spec is invalid or removed, stopping existing git poller.")
 			cancel()
 			delete(r.ActiveGitPollers, proxyNamespacedName)
 		}
 		// Use the new consolidated error handler - removeFinalizer = false for normal operations
-		_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.SourceNotSpecifiedReason, "Neither GitRepository nor LocalPath specified", err, false)
+		_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.SourceNotSpecifiedReason, "No GitRepository specified", err, false)
 
 		return "", "", nil, err
 	}
