@@ -48,40 +48,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// CommandExecutor defines an interface for running external commands.
-type CommandExecutor interface {
-	CombinedOutput() ([]byte, error)
-	SetDir(dir string)
-}
-
-// RealCmdRunner is a concrete implementation of CommandExecutor that runs actual commands.
-type RealCmdRunner struct {
-	Name          string
-	Args          []string
-	Dir           string
-	CommanderFunc func(command string, args ...string) ([]byte, error)
-}
-
-func (rcr *RealCmdRunner) SetDir(dir string) {
-	rcr.Dir = dir
-}
-
-func (rcr *RealCmdRunner) CombinedOutput() ([]byte, error) {
-	if rcr.CommanderFunc != nil {
-		return rcr.CommanderFunc(rcr.Name, rcr.Args...)
-	}
-	cmd := exec.Command(rcr.Name, rcr.Args...)
-	if rcr.Dir != "" {
-		cmd.Dir = rcr.Dir
-	}
-
-	return cmd.CombinedOutput()
-}
-
-var cmdRunnerFactory = func(name string, args ...string) CommandExecutor {
-	return &RealCmdRunner{Name: name, Args: args}
-}
-
 func (r *Reconciler) getCdk8sAppProxyForPolling(ctx context.Context, proxyName types.NamespacedName) (*addonsv1alpha1.Cdk8sAppProxy, error) {
 	cdk8sAppProxy := &addonsv1alpha1.Cdk8sAppProxy{}
 	if err := r.Get(ctx, proxyName, cdk8sAppProxy); err != nil {
@@ -121,35 +87,41 @@ func (r *Reconciler) checkIfResourceExists(ctx context.Context, dynClient dynami
 }
 
 func (r *Reconciler) synthesizeAndParseResources(appSourcePath string, logger logr.Logger) ([]*unstructured.Unstructured, error) {
+	reason := addonsv1alpha1.Cdk8sSynthFailedReason
 	// Synthesize cdk8s application
-	if err := r.synthesizeCdk8sApp(appSourcePath, logger, OperationSynthesize); err != nil {
+	if err := r.synthesizeCdk8sApp(appSourcePath, logger, reason); err != nil {
 		return nil, err
 	}
 
 	// Find manifest files
-	manifestFiles, err := r.findManifestFiles(appSourcePath, logger, OperationFindFiles)
+	manifestFiles, err := r.findManifestFiles(appSourcePath, logger, reason)
 	if err != nil {
 		return nil, err
 	}
 
 	// Parse resources from manifest files using the consolidated function
-	return r.parseManifestFiles(manifestFiles, logger, OperationSynthesize)
+	return r.parseManifestFiles(manifestFiles, logger, reason)
 }
 
 func (r *Reconciler) synthesizeCdk8sApp(appSourcePath string, logger logr.Logger, operation string) error {
 	logger.Info("Synthesizing cdk8s application", "effectiveSourcePath", appSourcePath, "operation", operation)
 
-	synthCmd := cmdRunnerFactory("cdk8s", "synth")
-	synthCmd.SetDir(appSourcePath)
-	output, synthErr := synthCmd.CombinedOutput()
-	if synthErr != nil {
-		logger.Error(synthErr, "cdk8s synth failed", "output", string(output), "operation", operation)
+	// npmInstall := cmdRunnerFactory("npm", "install")
+	// npmInstall.SetDir(appSourcePath)
+	// output, err := npmInstall.CombinedOutput()
+	// if err != nil {
+	//	logger.Error(err, "npm installation failed", "output", string(output), "operation:", OperationNpmInstall)
+	// }
 
-		return synthErr
+	synth := exec.Command("cdk8s", "synth")
+	synth.Dir = appSourcePath
+	if err := synth.Run(); err != nil {
+		logger.Error(err, "Failed to synth cdk8s application", "effectiveSourcePath", appSourcePath)
+
+		return err
 	}
 
-	logger.Info("cdk8s synth successful", "outputSummary", truncateString(string(output), 200), "operation", operation)
-	// logger.V(1).Info("cdk8s synth full output", "output", string(output), "operation", operation)
+	logger.Info("Synthesized cdk8s application", "effectiveSourcePath", appSourcePath, "operation", operation)
 
 	return nil
 }
@@ -241,7 +213,7 @@ func (r *Reconciler) deleteResourcesFromClusters(ctx context.Context, cdk8sAppPr
 		dynamicClient, err := r.getDynamicClientForCluster(ctx, cdk8sAppProxy.Namespace, cluster.Name)
 		if err != nil {
 			clusterLogger.Error(err, "Failed to get dynamic client for cluster during deletion, skipping this cluster")
-			// Log error but continue with other clusters
+
 			continue
 		}
 
@@ -374,14 +346,6 @@ func (r *Reconciler) updateStatusWithError(ctx context.Context, cdk8sAppProxy *a
 	}
 
 	return err
-}
-
-func truncateString(str string, num int) string {
-	if len(str) > num {
-		return str[0:num] + "..."
-	}
-
-	return str
 }
 
 // TODO: This is a naive pluralization and might not work for all kinds.

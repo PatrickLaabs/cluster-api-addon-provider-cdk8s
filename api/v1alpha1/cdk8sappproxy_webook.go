@@ -2,6 +2,8 @@ package v1alpha1
 
 import (
 	"fmt"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -31,6 +33,12 @@ func (c *Cdk8sAppProxy) Default() {
 	// Set the default git reference if not specified
 	if c.Spec.GitRepository != nil && c.Spec.GitRepository.Reference == "" {
 		c.Spec.GitRepository.Reference = "main"
+	}
+
+	if c.Spec.GitRepository != nil && c.Spec.GitRepository.ReferencePollInterval == nil {
+		c.Spec.GitRepository.ReferencePollInterval = &metav1.Duration{
+			Duration: 5 * time.Minute,
+		}
 	}
 
 	// Set the default path if not specified
@@ -68,13 +76,8 @@ func (c *Cdk8sAppProxy) ValidateDelete() (admission.Warnings, error) {
 func (c *Cdk8sAppProxy) validateCdk8sAppProxy() (admission.Warnings, error) {
 	var allErrs []error
 
-	// Validate that either LocalPath or GitRepository is specified, but not both
-	if c.Spec.LocalPath != "" && c.Spec.GitRepository != nil {
-		allErrs = append(allErrs, fmt.Errorf("only one of localPath or gitRepository can be specified"))
-	}
-
-	if c.Spec.LocalPath == "" && c.Spec.GitRepository == nil {
-		allErrs = append(allErrs, fmt.Errorf("either localPath or gitRepository must be specified"))
+	if c.Spec.GitRepository == nil {
+		allErrs = append(allErrs, fmt.Errorf("gitRepository must be specified"))
 	}
 
 	// Validate GitRepository fields if specified

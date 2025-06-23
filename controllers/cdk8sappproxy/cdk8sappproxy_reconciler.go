@@ -71,7 +71,7 @@ func (r *Reconciler) reconcileDelete(ctx context.Context, cdk8sAppProxy *addonsv
 	}
 
 	// Get a source path for deletion
-	appSourcePath, cleanup, err := r.prepareSourceForDeletion(ctx, cdk8sAppProxy, logger)
+	appSourcePath, _, cleanup, err := r.prepareSource(ctx, cdk8sAppProxy, proxyNamespacedName, logger, OperationDeletion)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -114,7 +114,7 @@ func (r *Reconciler) reconcileNormal(ctx context.Context, cdk8sAppProxy *addonsv
 	}
 
 	// Prepare a source path and get current commit hash
-	appSourcePath, currentCommitHash, cleanup, err := r.prepareSource(ctx, cdk8sAppProxy, proxyNamespacedName, logger)
+	appSourcePath, currentCommitHash, cleanup, err := r.prepareSource(ctx, cdk8sAppProxy, proxyNamespacedName, logger, OperationNormal)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -334,8 +334,8 @@ func (r *Reconciler) checkGitOrAnnotationTriggers(cdk8sAppProxy *addonsv1alpha1.
 			return true
 		}
 		logger.Info("No new Git changes detected (current clone matches last processed, and no pending poller detection).", "commitHash", currentCommitHash, "reference", gitSpecRef)
-	} else if cdk8sAppProxy.Spec.LocalPath != "" && cdk8sAppProxy.Status.ObservedGeneration == 0 {
-		logger.Info("Initial processing for LocalPath or source type without explicit change detection. Proceeding with cdk8s synth and apply.")
+	} else if cdk8sAppProxy.Status.ObservedGeneration == 0 {
+		logger.Info("Initial processing for source type without explicit change detection. Proceeding with cdk8s synth and apply.")
 
 		return true
 	}
@@ -377,7 +377,7 @@ func (r *Reconciler) handleSkipApply(ctx context.Context, cdk8sAppProxy *addonsv
 
 func (r *Reconciler) reestablishWatchesForExistingResources(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) error {
 	// Get the source and parse resources to know what should be watched
-	appSourcePath, _, cleanup, err := r.prepareSource(ctx, cdk8sAppProxy, types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}, logger)
+	appSourcePath, _, cleanup, err := r.prepareSource(ctx, cdk8sAppProxy, types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}, logger, OperationNormal)
 	if err != nil {
 		return err
 	}

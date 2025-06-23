@@ -100,9 +100,8 @@ spec:
                 type: object
                 x-kubernetes-map-type: atomic
               gitRepository:
-                description: |-
-                  GitRepository specifies the Git repository for the cdk8s app.
-                  One of LocalPath or GitRepository must be specified.
+                description: GitRepository specifies the Git repository for the cdk8s
+                  app.
                 properties:
                   authSecretRef:
                     description: |-
@@ -129,17 +128,19 @@ spec:
                   reference:
                     description: Reference is the git reference (branch, tag, or commit).
                     type: string
+                  referencePollInterval:
+                    description: |-
+                      ReferencePollInterval polls the defined git repository for changes.
+                      Defaults to 5 min.
+                    type: string
                   url:
                     description: URL is the git repository URL.
                     type: string
                 required:
+                - path
+                - reference
                 - url
                 type: object
-              localPath:
-                description: |-
-                  LocalPath is the local filesystem path to the cdk8s app.
-                  One of LocalPath or GitRepository must be specified.
-                type: string
             required:
             - clusterSelector
             type: object
