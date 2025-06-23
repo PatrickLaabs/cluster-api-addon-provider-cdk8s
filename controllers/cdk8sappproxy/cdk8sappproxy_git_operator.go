@@ -1,7 +1,6 @@
 package cdk8sappproxy
 
 import (
-	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -56,46 +55,6 @@ func (r *Reconciler) getGitAuth(ctx context.Context, cdk8sAppProxy *addonsv1alph
 	}, nil
 }
 
-func (r *Reconciler) cloneGitRepository(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, gitSpec *addonsv1alpha1.GitRepositorySpec, tempDir string, logger logr.Logger, operation string) error {
-	cloneOptions := &git.CloneOptions{
-		URL:      gitSpec.URL,
-		Progress: &gitProgressLogger{logger: logger.WithName("git-clone")},
-	}
-
-	// Handle authentication if needed
-	if gitSpec.AuthSecretRef != nil {
-		auth, err := r.getGitAuth(ctx, cdk8sAppProxy, gitSpec.AuthSecretRef, logger, operation)
-		if err != nil {
-			return err
-		}
-		cloneOptions.Auth = auth
-	}
-
-	logger.Info("Executing git clone with go-git", "url", gitSpec.URL, "targetDir", tempDir, "operation", operation)
-
-	_, err := git.PlainCloneContext(ctx, tempDir, false, cloneOptions)
-	if err != nil {
-		logger.Error(err, "go-git PlainCloneContext failed", "operation", operation)
-		reason := addonsv1alpha1.GitCloneFailedReason
-		if errors.Is(err, plumbingtransport.ErrAuthenticationRequired) || strings.Contains(err.Error(), "authentication required") {
-			reason = addonsv1alpha1.GitAuthenticationFailedReason
-		}
-
-		// Only call updateStatusWithError if we have a valid cdk8sAppProxy (not during deletion cleanup)
-		if cdk8sAppProxy != nil {
-			// Determine if we should remove finalizer based on operation
-			removeFinalizer := operation == OperationDeletion
-
-			return r.updateStatusWithError(ctx, cdk8sAppProxy, reason, "go-git clone failed during "+operation, err, removeFinalizer)
-		}
-
-		return err
-	}
-	logger.Info("Successfully cloned git repository with go-git", "operation", operation)
-
-	return nil
-}
-
 // pollGitRepository periodically checks the remote git repository for changes.
 func (r *Reconciler) pollGitRepository(ctx context.Context, proxyName types.NamespacedName) {
 	logger := log.FromContext(ctx).WithValues("cdk8sappproxy", proxyName.String(), "goroutine", "pollGitRepository")
@@ -103,7 +62,7 @@ func (r *Reconciler) pollGitRepository(ctx context.Context, proxyName types.Name
 	cdk8sAppProxy := &addonsv1alpha1.Cdk8sAppProxy{}
 	err := r.Get(ctx, proxyName, cdk8sAppProxy)
 	if err != nil {
-		logger.Error(err, "Failed to get cdk8sAppProxy")
+		logger.Error(err, "Failed to get cdk8sAppProxy for polling")
 
 		return
 	}
@@ -147,26 +106,45 @@ func (r *Reconciler) pollGitRepositoryOnce(ctx context.Context, proxyName types.
 	gitSpec := cdk8sAppProxy.Spec.GitRepository
 	refName := r.determineGitReference(gitSpec)
 
-	remoteCommitHash, err := r.fetchRemoteCommitHash(ctx, cdk8sAppProxy, gitSpec, refName, logger)
+	logger.Info("Attempting to LsRemote (inlined in pollGitRepositoryOnce)", "url", gitSpec.URL, "refName", refName.String())
+
+	rem := git.NewRemote(memory.NewStorage(), &config.RemoteConfig{
+		URLs: []string{gitSpec.URL},
+	})
+
+	var authGit *http.BasicAuth // Renamed from 'auth' to avoid conflict with 'err' if it was also named 'auth'
+	authGit, err = r.getGitAuth(ctx, cdk8sAppProxy, gitSpec.AuthSecretRef, logger, "fetchRemoteCommitHash_inlined")
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "failed to get git auth for LsRemote in pollGitRepositoryOnce")
 	}
 
-	return r.handleGitRepositoryChange(ctx, proxyName, cdk8sAppProxy, remoteCommitHash, logger)
-}
+	refs, err := rem.ListContext(ctx, &git.ListOptions{Auth: authGit})
+	if err != nil {
+		logger.Error(err, "Failed to LsRemote from git repository in pollGitRepositoryOnce")
+		if errors.Is(err, plumbingtransport.ErrAuthenticationRequired) || strings.Contains(err.Error(), "authentication required") {
+			logger.Info("Authentication failed for LsRemote in pollGitRepositoryOnce. Please check credentials.")
+		}
+		return errors.Wrap(err, "failed to LsRemote from git repository in pollGitRepositoryOnce")
+	}
 
-func (r *Reconciler) findRemoteCommitHash(refs []*plumbing.Reference, refName plumbing.ReferenceName, logger logr.Logger) (string, error) {
-	// First, try to find the exact reference
+	var remoteCommitHash string
+	foundRef := false
 	for _, ref := range refs {
 		if ref.Name() == refName {
-			remoteCommitHash := ref.Hash().String()
-
-			return remoteCommitHash, nil
+			remoteCommitHash = ref.Hash().String()
+			logger.Info("Found matching remote reference in pollGitRepositoryOnce", "refName", refName.String(), "commitHash", remoteCommitHash)
+			foundRef = true
+			break
 		}
 	}
-	logger.Error(nil, "Specified reference not found in remote repository", "refName", refName.String())
 
-	return "", errors.Errorf("reference '%s' not found in remote repository", refName.String())
+	if !foundRef {
+		err = errors.Errorf("reference '%s' not found in remote repository %s during poll", refName.String(), gitSpec.URL)
+		logger.Error(err, "Specified reference not found in remote repository in pollGitRepositoryOnce", "refName", refName.String(), "url", gitSpec.URL)
+		return err
+	}
+	
+	return r.handleGitRepositoryChange(ctx, proxyName, cdk8sAppProxy, remoteCommitHash, logger)
 }
 
 func (r *Reconciler) determineGitReference(gitSpec *addonsv1alpha1.GitRepositorySpec) plumbing.ReferenceName {
@@ -201,31 +179,6 @@ func (r *Reconciler) handleGitRepositoryChange(ctx context.Context, proxyName ty
 	}
 
 	return r.triggerReconciliation(ctx, proxyName, logger)
-}
-
-func (r *Reconciler) fetchRemoteCommitHash(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, gitSpec *addonsv1alpha1.GitRepositorySpec, refName plumbing.ReferenceName, logger logr.Logger) (string, error) {
-	logger.Info("Attempting to LsRemote", "url", gitSpec.URL, "refName", refName.String())
-
-	rem := git.NewRemote(memory.NewStorage(), &config.RemoteConfig{
-		URLs: []string{gitSpec.URL},
-	})
-
-	auth, err := r.getGitAuth(ctx, cdk8sAppProxy, gitSpec.AuthSecretRef, logger, "fetchRemoteCommitHash")
-	if err != nil {
-		return "", err
-	}
-
-	refs, err := rem.ListContext(ctx, &git.ListOptions{Auth: auth})
-	if err != nil {
-		logger.Error(err, "Failed to LsRemote from git repository")
-		if errors.Is(err, plumbingtransport.ErrAuthenticationRequired) || strings.Contains(err.Error(), "authentication required") {
-			logger.Info("Authentication failed for LsRemote. Please check credentials.")
-		}
-
-		return "", err
-	}
-
-	return r.findRemoteCommitHash(refs, refName, logger)
 }
 
 func (r *Reconciler) manageGitPollerLifecycle(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, proxyNamespacedName types.NamespacedName, logger logr.Logger) {
@@ -277,9 +230,6 @@ func (r *Reconciler) updateRemoteGitHashStatus(ctx context.Context, proxyName ty
 	return nil
 }
 
-// prepareSource determines the source path for cdk8s application files, handling Git or local paths.
-// It returns the application source path, current commit hash (if applicable), a cleanup function, and an error.
-// The 'operation' parameter informs logging and error handling, especially for deletion scenarios.
 func (r *Reconciler) prepareSource(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, proxyNamespacedName types.NamespacedName, logger logr.Logger, operation string) (string, string, func(), error) {
 	var appSourcePath string
 	var currentCommitHash string
@@ -312,22 +262,20 @@ func (r *Reconciler) prepareSource(ctx context.Context, cdk8sAppProxy *addonsv1a
 		}
 		logger.Info("Created temporary directory for clone", "tempDir", tempDir, "operation", operation)
 
-		// Pass cdk8sAppProxy as nil if it's a deletion operation where status updates are handled differently or not needed.
-		var proxyForGitOps *addonsv1alpha1.Cdk8sAppProxy
+		var retrieveCommitHash string
+		retrieveCommitHash, err = r.performGitOperations(ctx, cdk8sAppProxy, gitSpec, tempDir, logger, operation)
+		if err != nil {
+			cleanupFunc()
+
+			return "", "", nil, errors.Wrapf(err, "failed during git operations for %s", operation)
+		}
+
 		if operation == OperationNormal {
-			proxyForGitOps = cdk8sAppProxy
-		}
-
-		if err := r.cloneGitRepository(ctx, proxyForGitOps, gitSpec, tempDir, logger, operation); err != nil {
-			cleanupFunc()
-
-			return "", "", nil, err
-		}
-
-		if err := r.checkoutGitReference(ctx, proxyForGitOps, gitSpec, tempDir, logger, operation); err != nil {
-			cleanupFunc()
-
-			return "", "", nil, err
+			currentCommitHash = retrieveCommitHash
+			if currentCommitHash != "" && cdk8sAppProxy != nil {
+				cdk8sAppProxy.Status.LastRemoteGitHash = currentCommitHash
+				logger.Info("Updated cdk8sAppProxy.Status.LastRemoteGitHash with the latest commit hash from remote", "lastRemoteGitHash", currentCommitHash)
+			}
 		}
 
 		appSourcePath = tempDir
@@ -336,44 +284,16 @@ func (r *Reconciler) prepareSource(ctx context.Context, cdk8sAppProxy *addonsv1a
 			logger.Info("Adjusted appSourcePath for repository subpath", "subPath", gitSpec.Path, "finalPath", appSourcePath, "operation", operation)
 		}
 
-		// Only get commit hash for normal operations, not for deletion prep.
-		if operation == OperationNormal {
-			logger.Info("Attempting to retrieve current commit hash from Git repository", "repoDir", tempDir)
-			repo, err := git.PlainOpen(tempDir)
-			if err != nil {
-				cleanupFunc()
-				_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCloneFailedReason, "Failed to open git repository post-clone: "+err.Error(), err, false)
-
-				return "", "", nil, err
-			}
-			headRef, err := repo.Head()
-			if err != nil {
-				cleanupFunc()
-				_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCloneFailedReason, "Failed to get HEAD reference from git repository post-clone: "+err.Error(), err, false)
-
-				return "", "", nil, err
-			}
-			currentCommitHash = headRef.Hash().String()
-			logger.Info("Successfully retrieved current commit hash from Git repository", "commitHash", currentCommitHash)
-
-			// Store current commit hash in status
-			if currentCommitHash != "" && cdk8sAppProxy != nil {
-				cdk8sAppProxy.Status.LastRemoteGitHash = currentCommitHash
-				logger.Info("Updated cdk8sAppProxy.Status.LastRemoteGitHash with the latest commit hash from remote", "lastRemoteGitHash", currentCommitHash)
-			}
-		}
-
 	default:
 		err := errors.New("no source specified (neither GitRepository nor LocalPath)")
-		logger.Error(err, "No source specified", "operation", operation)
 		if operation == OperationNormal { // Poller management and status updates for normal flow
 			r.stopGitPoller(proxyNamespacedName, logger)
 			if cdk8sAppProxy != nil {
-				_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.SourceNotSpecifiedReason, err.Error(), err, false)
+				_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.SourceNotSpecifiedReason, "No source specified during "+operation, err, false)
 			}
 		} else if operation == OperationDeletion && cdk8sAppProxy != nil {
 			// For deletion, if source can't be determined, we might still want to remove finalizer.
-			_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.SourceNotSpecifiedReason, "Cannot determine resources to delete: "+err.Error(), err, true)
+			_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.SourceNotSpecifiedReason, "No source specified, cannot determine resources to delete during "+operation, err, true)
 		}
 
 		return "", "", nil, err
@@ -382,15 +302,146 @@ func (r *Reconciler) prepareSource(ctx context.Context, cdk8sAppProxy *addonsv1a
 	return appSourcePath, currentCommitHash, cleanupFunc, nil
 }
 
-func (r *Reconciler) checkoutGitReference(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, gitSpec *addonsv1alpha1.GitRepositorySpec, tempDir string, logger logr.Logger, operation string) error {
-	if gitSpec.Reference == "" {
-		return nil
+func (r *Reconciler) performGitOperations(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, gitSpec *addonsv1alpha1.GitRepositorySpec, tempDir string, logger logr.Logger, operation string) (string, error) {
+	var proxyForStatusUpdates *addonsv1alpha1.Cdk8sAppProxy
+	if operation == OperationNormal {
+		proxyForStatusUpdates = cdk8sAppProxy
 	}
+
+	logger.Info("Starting git clone operation", "url", gitSpec.URL, "tempDir", tempDir, "operation", operation)
+	cloneOptions := &git.CloneOptions{
+		URL: gitSpec.URL,
+	}
+	if gitSpec.AuthSecretRef != nil {
+		auth, err := r.getGitAuth(ctx, proxyForStatusUpdates, gitSpec.AuthSecretRef, logger, operation) // Use proxyForStatusUpdates for auth context if needed
+		if err != nil {
+			// If getGitAuth fails, wrap and return error. It doesn't call updateStatusWithError itself.
+			return "", errors.Wrapf(err, "failed to get git auth for clone during %s", operation)
+		}
+		cloneOptions.Auth = auth
+	}
+	logger.Info("Executing git clone with go-git (inlined)", "url", gitSpec.URL, "targetDir", tempDir, "operation", operation)
+	_, err := git.PlainCloneContext(ctx, tempDir, false, cloneOptions)
+	if err != nil {
+		reason := addonsv1alpha1.GitCloneFailedReason
+		if errors.Is(err, plumbingtransport.ErrAuthenticationRequired) || strings.Contains(err.Error(), "authentication required") {
+			reason = addonsv1alpha1.GitAuthenticationFailedReason
+		}
+		if proxyForStatusUpdates != nil {
+			removeFinalizer := operation == OperationDeletion // This logic might need refinement if OperationDeletion is not expected here
+			// It's better if updateStatusWithError is called with the original cdk8sAppProxy from prepareSource if operation is Normal
+			callingProxy := cdk8sAppProxy // Use the main proxy for status updates if available
+			if operation != OperationNormal {
+				callingProxy = proxyForStatusUpdates // Which would be nil for deletion if cdk8sAppProxy in prepareSource was nil
+			}
+			if callingProxy != nil {
+				return "", r.updateStatusWithError(ctx, callingProxy, reason, "go-git PlainCloneContext failed during "+operation, err, removeFinalizer)
+			}
+		}
+		return "", errors.Wrapf(err, "go-git PlainCloneContext failed during %s (no status update)", operation) // Error if no proxy for status
+	}
+	logger.Info("Git clone operation completed successfully", "operation", operation)
+
+	if gitSpec.Reference != "" {
+		logger.Info("Starting git checkout operation", "reference", gitSpec.Reference, "dir", tempDir, "operation", operation)
+		repo, err := git.PlainOpen(tempDir)
+		if err != nil {
+			callingProxy := cdk8sAppProxy
+			if operation != OperationNormal {
+				callingProxy = proxyForStatusUpdates
+			}
+			if callingProxy != nil {
+				return "", r.updateStatusWithError(ctx, callingProxy, addonsv1alpha1.GitCheckoutFailedReason, "go-git PlainOpen failed during "+operation+" for checkout", err, operation == OperationDeletion)
+			}
+			return "", errors.Wrapf(err, "go-git PlainOpen failed during %s for checkout (no status update)", operation)
+		}
+
+		worktree, err := repo.Worktree()
+		if err != nil {
+			callingProxy := cdk8sAppProxy
+			if operation != OperationNormal {
+				callingProxy = proxyForStatusUpdates
+			}
+			if callingProxy != nil {
+				return "", r.updateStatusWithError(ctx, callingProxy, addonsv1alpha1.GitCheckoutFailedReason, "go-git Worktree failed during "+operation+" for checkout", err, operation == OperationDeletion)
+			}
+			return "", errors.Wrapf(err, "go-git Worktree failed during %s for checkout (no status update)", operation)
+		}
+
+		checkoutOpts := &git.CheckoutOptions{Force: true}
+		if plumbing.IsHash(gitSpec.Reference) {
+			checkoutOpts.Hash = plumbing.NewHash(gitSpec.Reference)
+		} else {
+			revision := plumbing.Revision(gitSpec.Reference)
+			resolvedHash, err := repo.ResolveRevision(revision)
+			if err != nil {
+				callingProxy := cdk8sAppProxy
+				if operation != OperationNormal {
+					callingProxy = proxyForStatusUpdates
+				}
+				if callingProxy != nil {
+					return "", r.updateStatusWithError(ctx, callingProxy, addonsv1alpha1.GitCheckoutFailedReason, "go-git ResolveRevision failed for ref "+gitSpec.Reference+" during "+operation, err, operation == OperationDeletion)
+				}
+				return "", errors.Wrapf(err, "go-git ResolveRevision failed for ref %s during %s (no status update)", gitSpec.Reference, operation)
+			}
+			checkoutOpts.Hash = *resolvedHash
+		}
+
+		err = worktree.Checkout(checkoutOpts)
+		if err != nil {
+			callingProxy := cdk8sAppProxy
+			if operation != OperationNormal {
+				callingProxy = proxyForStatusUpdates
+			}
+			if callingProxy != nil {
+				return "", r.updateStatusWithError(ctx, callingProxy, addonsv1alpha1.GitCheckoutFailedReason, "go-git Checkout failed for ref "+gitSpec.Reference+" during "+operation, err, operation == OperationDeletion)
+			}
+			return "", errors.Wrapf(err, "go-git Checkout failed for ref %s during %s (no status update)", gitSpec.Reference, operation)
+		}
+		logger.Info("Git checkout operation completed successfully", "reference", gitSpec.Reference, "operation", operation)
+	} else {
+		logger.Info("No specific git reference to checkout, using default branch", "operation", operation)
+	}
+
+	var currentCommitHash string
+	if operation == OperationNormal {
+		logger.Info("Attempting to retrieve current commit hash from Git repository", "tempDir", tempDir, "operation", operation)
+		repo, err := git.PlainOpen(tempDir)
+		if err != nil {
+			// For OperationNormal, cdk8sAppProxy should be non-nil.
+			if cdk8sAppProxy != nil {
+				err := r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.GitOperationFailedReason,
+					"Failed to open git repository post-clone/checkout after "+operation, err, false)
+				if err != nil {
+					return "", err
+				}
+			}
+			return "", errors.Wrapf(err, "failed to open git repository at %s after %s", tempDir, operation)
+		}
+
+		headRef, err := repo.Head()
+		if err != nil {
+			if cdk8sAppProxy != nil {
+				err := r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.GitOperationFailedReason,
+					"Failed to get HEAD reference from git repository post-clone/checkout after "+operation, err, false)
+				if err != nil {
+					return "", err
+				}
+			}
+			return "", errors.Wrapf(err, "failed to get HEAD reference for repository at %s after %s", tempDir, operation)
+		}
+		currentCommitHash = headRef.Hash().String()
+		logger.Info("Successfully retrieved current commit hash from Git repository", "commitHash", currentCommitHash, "operation", operation)
+	}
+
+	return currentCommitHash, nil
+}
+
+func (r *Reconciler) checkoutGitReference(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, gitSpec *addonsv1alpha1.GitRepositorySpec, tempDir string, logger logr.Logger, operation string) error {
 	logger.Info("Executing git checkout with go-git", "reference", gitSpec.Reference, "dir", tempDir, "operation", operation)
 
 	repo, err := git.PlainOpen(tempDir)
 	if err != nil {
-		logger.Error(err, "go-git PlainOpen failed", "operation", operation)
 		if cdk8sAppProxy != nil {
 			removeFinalizer := operation == OperationDeletion
 
@@ -402,7 +453,6 @@ func (r *Reconciler) checkoutGitReference(ctx context.Context, cdk8sAppProxy *ad
 
 	worktree, err := repo.Worktree()
 	if err != nil {
-		logger.Error(err, "go-git Worktree failed", "operation", operation)
 		if cdk8sAppProxy != nil {
 			removeFinalizer := operation == OperationDeletion
 
@@ -419,7 +469,6 @@ func (r *Reconciler) checkoutGitReference(ctx context.Context, cdk8sAppProxy *ad
 		revision := plumbing.Revision(gitSpec.Reference)
 		resolvedHash, err := repo.ResolveRevision(revision)
 		if err != nil {
-			logger.Error(err, "go-git ResolveRevision failed", "reference", gitSpec.Reference, "operation", operation)
 			if cdk8sAppProxy != nil {
 				removeFinalizer := operation == OperationDeletion
 
@@ -433,7 +482,6 @@ func (r *Reconciler) checkoutGitReference(ctx context.Context, cdk8sAppProxy *ad
 
 	err = worktree.Checkout(checkoutOpts)
 	if err != nil {
-		logger.Error(err, "go-git Checkout failed", "reference", gitSpec.Reference, "operation", operation)
 		if cdk8sAppProxy != nil {
 			removeFinalizer := operation == OperationDeletion
 
@@ -445,25 +493,4 @@ func (r *Reconciler) checkoutGitReference(ctx context.Context, cdk8sAppProxy *ad
 	logger.Info("Successfully checked out git reference with go-git", "reference", gitSpec.Reference, "operation", operation)
 
 	return nil
-}
-
-func (gpl *gitProgressLogger) Write(p []byte) (n int, err error) {
-	gpl.buffer = append(gpl.buffer, p...)
-	for {
-		idx := bytes.IndexByte(gpl.buffer, '\n')
-		if idx == -1 {
-			// If buffer gets too large without a newline, log it to prevent OOM
-			if len(gpl.buffer) > 1024 {
-				gpl.logger.Info(strings.TrimSpace(string(gpl.buffer)))
-				gpl.buffer = nil
-			}
-
-			break
-		}
-		line := gpl.buffer[:idx]
-		gpl.buffer = gpl.buffer[idx+1:]
-		gpl.logger.Info(strings.TrimSpace(string(line)))
-	}
-
-	return len(p), nil
 }
