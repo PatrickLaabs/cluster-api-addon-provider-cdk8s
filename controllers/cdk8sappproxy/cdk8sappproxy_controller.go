@@ -87,19 +87,20 @@ func (r *Reconciler) checkIfResourceExists(ctx context.Context, dynClient dynami
 }
 
 func (r *Reconciler) synthesizeAndParseResources(appSourcePath string, logger logr.Logger) ([]*unstructured.Unstructured, error) {
+	reason := addonsv1alpha1.Cdk8sSynthFailedReason
 	// Synthesize cdk8s application
-	if err := r.synthesizeCdk8sApp(appSourcePath, logger, OperationSynthesize); err != nil {
+	if err := r.synthesizeCdk8sApp(appSourcePath, logger, reason); err != nil {
 		return nil, err
 	}
 
 	// Find manifest files
-	manifestFiles, err := r.findManifestFiles(appSourcePath, logger, OperationFindFiles)
+	manifestFiles, err := r.findManifestFiles(appSourcePath, logger, reason)
 	if err != nil {
 		return nil, err
 	}
 
 	// Parse resources from manifest files using the consolidated function
-	return r.parseManifestFiles(manifestFiles, logger, OperationSynthesize)
+	return r.parseManifestFiles(manifestFiles, logger, reason)
 }
 
 func (r *Reconciler) synthesizeCdk8sApp(appSourcePath string, logger logr.Logger, operation string) error {
@@ -212,7 +213,7 @@ func (r *Reconciler) deleteResourcesFromClusters(ctx context.Context, cdk8sAppPr
 		dynamicClient, err := r.getDynamicClientForCluster(ctx, cdk8sAppProxy.Namespace, cluster.Name)
 		if err != nil {
 			clusterLogger.Error(err, "Failed to get dynamic client for cluster during deletion, skipping this cluster")
-			// Log error but continue with other clusters
+
 			continue
 		}
 

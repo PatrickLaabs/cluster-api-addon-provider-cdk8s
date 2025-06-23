@@ -22,13 +22,13 @@ import clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 const (
 	// DeploymentProgressingCondition indicates that the cdk8s application deployment is progressing.
 	DeploymentProgressingCondition clusterv1.ConditionType = "DeploymentProgressing"
-
 	// GitCloneFailedReason indicates that git clone operation failed.
 	GitCloneFailedReason = "GitCloneFailed"
 	// GitCheckoutFailedReason indicates that git checkout operation failed.
 	GitCheckoutFailedReason = "GitCheckoutFailed"
 	// SourceNotSpecifiedReason indicates that no source (GitRepository) was specified.
 	SourceNotSpecifiedReason = "SourceNotSpecified"
+	GitOperationFailedReason = "GitOperationFailed"
 	// Cdk8sSynthFailedReason indicates that cdk8s synth operation failed.
 	Cdk8sSynthFailedReason = "Cdk8sSynthFailed"
 	// WalkDistFailedReason indicates that walking the dist directory failed.

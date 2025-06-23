@@ -7,11 +7,6 @@ const (
 
 // Operation represents the type of operation being performed by the cdk8sappproxy controller.
 const (
-	OperationDeletion   = "deletion"
-	OperationNormal     = "normal"
-	OperationPolling    = "polling"
-	OperationFindFiles  = "findFiles"
-	OperationSynthesize = "synthesize"
-	OperationApply      = "apply"
-	OperationNpmInstall = "npmInstall"
+	OperationDeletion = "deletion"
+	OperationNormal   = "normal"
 )
