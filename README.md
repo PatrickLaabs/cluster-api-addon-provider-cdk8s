@@ -36,7 +36,7 @@ The `Cdk8sAppProxy` CustomResourceDefinition (CRD) is used to manage the deploym
 
 ### Example Manifest
 
-An example of a `Cdk8sAppProxy` manifest can be found in [`examples/cdk8sappproxy_sample-go.yaml`](./examples/cdk8sappproxy_sample.yaml). Below is a snippet:
+An example of a `Cdk8sAppProxy` manifest can be found in [`examples/cdk8sappproxy_sample-go.yaml`](./examples/cdk8sappproxy_sample-go.yaml). Below is a snippet:
 
 ```yaml
 apiVersion: addons.cluster.x-k8s.io/v1alpha1
