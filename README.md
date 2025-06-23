@@ -36,24 +36,25 @@ The `Cdk8sAppProxy` CustomResourceDefinition (CRD) is used to manage the deploym
 
 ### Example Manifest
 
-An example of a `Cdk8sAppProxy` manifest can be found in [`examples/cdk8sappproxy_sample.yaml`](./examples/cdk8sappproxy_sample.yaml). Below is a snippet:
+An example of a `Cdk8sAppProxy` manifest can be found in [`examples/cdk8sappproxy_sample-go.yaml`](./examples/cdk8sappproxy_sample.yaml). Below is a snippet:
 
 ```yaml
 apiVersion: addons.cluster.x-k8s.io/v1alpha1
 kind: Cdk8sAppProxy
 metadata:
-  name: cdk8s-sample-app
+  name: cdk8s-sample-app-go
   namespace: default
 spec:
   gitRepository:
-    url: "https://github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/examples/cdk8s-sample-deployment"
+    url: "https://github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s"
     reference: "main"
-    path: "."
+    referencePollInterval: '5'
+    path: "examples/cdk8s-sample-deployment"
     # authSecretRef:
     #   name: git-credentials
   clusterSelector: {}
-    # matchLabels:
-      # environment: development
+          # matchLabels:
+  # environment: development
 # ---
 # apiVersion: v1
 # kind: Secret
