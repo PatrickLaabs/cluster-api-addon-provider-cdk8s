@@ -48,40 +48,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// CommandExecutor defines an interface for running external commands.
-type CommandExecutor interface {
-	CombinedOutput() ([]byte, error)
-	SetDir(dir string)
-}
-
-// RealCmdRunner is a concrete implementation of CommandExecutor that runs actual commands.
-type RealCmdRunner struct {
-	Name          string
-	Args          []string
-	Dir           string
-	CommanderFunc func(command string, args ...string) ([]byte, error)
-}
-
-func (rcr *RealCmdRunner) SetDir(dir string) {
-	rcr.Dir = dir
-}
-
-func (rcr *RealCmdRunner) CombinedOutput() ([]byte, error) {
-	if rcr.CommanderFunc != nil {
-		return rcr.CommanderFunc(rcr.Name, rcr.Args...)
-	}
-	cmd := exec.Command(rcr.Name, rcr.Args...)
-	if rcr.Dir != "" {
-		cmd.Dir = rcr.Dir
-	}
-
-	return cmd.CombinedOutput()
-}
-
-var cmdRunnerFactory = func(name string, args ...string) CommandExecutor {
-	return &RealCmdRunner{Name: name, Args: args}
-}
-
 func (r *Reconciler) getCdk8sAppProxyForPolling(ctx context.Context, proxyName types.NamespacedName) (*addonsv1alpha1.Cdk8sAppProxy, error) {
 	cdk8sAppProxy := &addonsv1alpha1.Cdk8sAppProxy{}
 	if err := r.Get(ctx, proxyName, cdk8sAppProxy); err != nil {
@@ -137,7 +103,7 @@ func (r *Reconciler) synthesizeAndParseResources(appSourcePath string, logger lo
 }
 
 func (r *Reconciler) synthesizeCdk8sApp(appSourcePath string, logger logr.Logger, operation string) error {
-	logger.Info("Synthesizing cdk8s application", "effectiveSourcePath", appSourcePath, "operation", OperationSynthesize)
+	logger.Info("Synthesizing cdk8s application", "effectiveSourcePath", appSourcePath, "operation", operation)
 
 	// npmInstall := cmdRunnerFactory("npm", "install")
 	// npmInstall.SetDir(appSourcePath)
@@ -146,16 +112,15 @@ func (r *Reconciler) synthesizeCdk8sApp(appSourcePath string, logger logr.Logger
 	//	logger.Error(err, "npm installation failed", "output", string(output), "operation:", OperationNpmInstall)
 	// }
 
-	synthCmd := cmdRunnerFactory("cdk8s", "synth")
-	synthCmd.SetDir(appSourcePath)
-	output, synthErr := synthCmd.CombinedOutput()
-	if synthErr != nil {
-		logger.Error(synthErr, "cdk8s synth failed", "output", string(output), "operation", OperationSynthesize)
+	synth := exec.Command("cdk8s", "synth")
+	synth.Dir = appSourcePath
+	if err := synth.Run(); err != nil {
+		logger.Error(err, "Failed to synth cdk8s application", "effectiveSourcePath", appSourcePath)
 
-		return synthErr
+		return err
 	}
 
-	logger.Info("cdk8s synth successful", "outputSummary", truncateString(string(output), 200), "operation", operation)
+	logger.Info("Synthesized cdk8s application", "effectiveSourcePath", appSourcePath, "operation", operation)
 
 	return nil
 }
@@ -380,14 +345,6 @@ func (r *Reconciler) updateStatusWithError(ctx context.Context, cdk8sAppProxy *a
 	}
 
 	return err
-}
-
-func truncateString(str string, num int) string {
-	if len(str) > num {
-		return str[0:num] + "..."
-	}
-
-	return str
 }
 
 // TODO: This is a naive pluralization and might not work for all kinds.
