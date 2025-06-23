@@ -96,13 +96,6 @@ func (r *Reconciler) cloneGitRepository(ctx context.Context, cdk8sAppProxy *addo
 	return nil
 }
 
-func getPollInterval(c *addonsv1alpha1.Cdk8sAppProxy) time.Duration {
-	if c.Spec.GitRepository != nil && c.Spec.GitRepository.ReferencePollInterval != nil {
-		return c.Spec.GitRepository.ReferencePollInterval.Duration
-	}
-	return 5 * time.Minute // default
-}
-
 // pollGitRepository periodically checks the remote git repository for changes.
 func (r *Reconciler) pollGitRepository(ctx context.Context, proxyName types.NamespacedName) {
 	logger := log.FromContext(ctx).WithValues("cdk8sappproxy", proxyName.String(), "goroutine", "pollGitRepository")
@@ -114,7 +107,13 @@ func (r *Reconciler) pollGitRepository(ctx context.Context, proxyName types.Name
 
 		return
 	}
-	pollInterval := getPollInterval(cdk8sAppProxy)
+
+	var pollInterval time.Duration
+	if cdk8sAppProxy.Spec.GitRepository.ReferencePollInterval == nil {
+		pollInterval = 5 * time.Minute
+	} else {
+		pollInterval = cdk8sAppProxy.Spec.GitRepository.ReferencePollInterval.Duration
+	}
 
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
@@ -154,58 +153,6 @@ func (r *Reconciler) pollGitRepositoryOnce(ctx context.Context, proxyName types.
 	}
 
 	return r.handleGitRepositoryChange(ctx, proxyName, cdk8sAppProxy, remoteCommitHash, logger)
-}
-
-func (r *Reconciler) prepareSourceForDeletion(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (string, func(), error) {
-	if cdk8sAppProxy.Spec.GitRepository != nil && cdk8sAppProxy.Spec.GitRepository.URL != "" {
-		return r.prepareGitSourceForDeletion(ctx, cdk8sAppProxy, logger)
-	}
-
-	err := errors.New("GitRepository not specified, cannot determine resources to delete")
-	logger.Info(err.Error())
-	_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.SourceNotSpecifiedReason, "Cannot determine resources to delete during deletion", err, true)
-
-	return "", func() {}, err
-}
-
-func (r *Reconciler) prepareGitSourceForDeletion(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (string, func(), error) {
-	gitSpec := cdk8sAppProxy.Spec.GitRepository
-	logger.Info("Using GitRepository source for deletion logic", "url", gitSpec.URL, "reference", gitSpec.Reference, "path", gitSpec.Path)
-
-	tempDir, err := os.MkdirTemp("", "cdk8s-git-delete-")
-	if err != nil {
-		logger.Error(err, "failed to create temp dir for git clone during deletion")
-
-		return "", func() {}, err
-	}
-
-	cleanupFunc := func() {
-		if err := os.RemoveAll(tempDir); err != nil {
-			logger.Error(err, "Failed to remove temporary clone directory for deletion", "tempDir", tempDir)
-		}
-	}
-
-	logger.Info("Created temporary directory for clone during deletion", "tempDir", tempDir)
-
-	if err := r.cloneGitRepository(ctx, nil, gitSpec, tempDir, logger, OperationDeletion); err != nil {
-		cleanupFunc()
-
-		return "", func() {}, err
-	}
-
-	if err := r.checkoutGitReference(ctx, nil, gitSpec, tempDir, logger, OperationDeletion); err != nil {
-		cleanupFunc()
-
-		return "", func() {}, err
-	}
-
-	appSourcePath := tempDir
-	if gitSpec.Path != "" {
-		appSourcePath = filepath.Join(tempDir, gitSpec.Path)
-		logger.Info("Adjusted appSourcePath for deletion", "subPath", gitSpec.Path, "finalPath", appSourcePath)
-	}
-
-	return appSourcePath, cleanupFunc, nil
 }
 
 func (r *Reconciler) findRemoteCommitHash(refs []*plumbing.Reference, refName plumbing.ReferenceName, logger logr.Logger) (string, error) {
@@ -330,110 +277,107 @@ func (r *Reconciler) updateRemoteGitHashStatus(ctx context.Context, proxyName ty
 	return nil
 }
 
-func (r *Reconciler) prepareSource(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, proxyNamespacedName types.NamespacedName, logger logr.Logger) (string, string, func(), error) {
+// prepareSource determines the source path for cdk8s application files, handling Git or local paths.
+// It returns the application source path, current commit hash (if applicable), a cleanup function, and an error.
+// The 'operation' parameter informs logging and error handling, especially for deletion scenarios.
+func (r *Reconciler) prepareSource(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, proxyNamespacedName types.NamespacedName, logger logr.Logger, operation string) (string, string, func(), error) {
 	var appSourcePath string
 	var currentCommitHash string
 	var cleanupFunc func()
 
 	switch {
 	case cdk8sAppProxy.Spec.GitRepository != nil && cdk8sAppProxy.Spec.GitRepository.URL != "":
-		path, hash, cleanup, err := r.prepareGitSource(ctx, cdk8sAppProxy, logger)
+		gitSpec := cdk8sAppProxy.Spec.GitRepository
+		logger.Info("Determined source type: GitRepository", "url", gitSpec.URL, "reference", gitSpec.Reference, "path", gitSpec.Path, "operation", operation)
+
+		tempDirPattern := "cdk8s-git-clone-"
+		if operation == OperationDeletion {
+			tempDirPattern = "cdk8s-git-delete-"
+		}
+		tempDir, err := os.MkdirTemp("", tempDirPattern)
 		if err != nil {
+			logger.Error(err, "Failed to create temp directory for git clone", "operation", operation)
+			// For normal operation, update status. For deletion, the Cdk8sAppProxy might be nil or finalizer needs removal.
+			if operation == OperationNormal && cdk8sAppProxy != nil {
+				_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCloneFailedReason, "Failed to create temp dir for git clone", err, false)
+			}
+
 			return "", "", nil, err
 		}
-		appSourcePath = path
-		currentCommitHash = hash
-		cleanupFunc = cleanup
 
-		// Store current commit hash in status
-		if currentCommitHash != "" {
-			cdk8sAppProxy.Status.LastRemoteGitHash = currentCommitHash
-			logger.Info("Updated cdk8sAppProxy.Status.LastRemoteGitHash with the latest commit hash from remote", "lastRemoteGitHash", currentCommitHash)
+		cleanupFunc = func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				logger.Error(err, "Failed to remove temporary clone directory", "tempDir", tempDir, "operation", operation)
+			}
+		}
+		logger.Info("Created temporary directory for clone", "tempDir", tempDir, "operation", operation)
+
+		// Pass cdk8sAppProxy as nil if it's a deletion operation where status updates are handled differently or not needed.
+		var proxyForGitOps *addonsv1alpha1.Cdk8sAppProxy
+		if operation == OperationNormal {
+			proxyForGitOps = cdk8sAppProxy
 		}
 
-		// Stop any existing git poller for a local path
-		if cancel, ok := r.ActiveGitPollers[proxyNamespacedName]; ok {
-			logger.Info("GitRepository spec removed or empty, stopping existing git poller.")
-			cancel()
-			delete(r.ActiveGitPollers, proxyNamespacedName)
+		if err := r.cloneGitRepository(ctx, proxyForGitOps, gitSpec, tempDir, logger, operation); err != nil {
+			cleanupFunc()
+
+			return "", "", nil, err
+		}
+
+		if err := r.checkoutGitReference(ctx, proxyForGitOps, gitSpec, tempDir, logger, operation); err != nil {
+			cleanupFunc()
+
+			return "", "", nil, err
+		}
+
+		appSourcePath = tempDir
+		if gitSpec.Path != "" {
+			appSourcePath = filepath.Join(tempDir, gitSpec.Path)
+			logger.Info("Adjusted appSourcePath for repository subpath", "subPath", gitSpec.Path, "finalPath", appSourcePath, "operation", operation)
+		}
+
+		// Only get commit hash for normal operations, not for deletion prep.
+		if operation == OperationNormal {
+			logger.Info("Attempting to retrieve current commit hash from Git repository", "repoDir", tempDir)
+			repo, err := git.PlainOpen(tempDir)
+			if err != nil {
+				cleanupFunc()
+				_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCloneFailedReason, "Failed to open git repository post-clone: "+err.Error(), err, false)
+
+				return "", "", nil, err
+			}
+			headRef, err := repo.Head()
+			if err != nil {
+				cleanupFunc()
+				_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCloneFailedReason, "Failed to get HEAD reference from git repository post-clone: "+err.Error(), err, false)
+
+				return "", "", nil, err
+			}
+			currentCommitHash = headRef.Hash().String()
+			logger.Info("Successfully retrieved current commit hash from Git repository", "commitHash", currentCommitHash)
+
+			// Store current commit hash in status
+			if currentCommitHash != "" && cdk8sAppProxy != nil {
+				cdk8sAppProxy.Status.LastRemoteGitHash = currentCommitHash
+				logger.Info("Updated cdk8sAppProxy.Status.LastRemoteGitHash with the latest commit hash from remote", "lastRemoteGitHash", currentCommitHash)
+			}
 		}
 
 	default:
-		err := errors.New("no source specified")
-		logger.Error(err, "No source specified")
-		if cancel, ok := r.ActiveGitPollers[proxyNamespacedName]; ok {
-			logger.Info("Source spec is invalid or removed, stopping existing git poller.")
-			cancel()
-			delete(r.ActiveGitPollers, proxyNamespacedName)
+		err := errors.New("no source specified (neither GitRepository nor LocalPath)")
+		logger.Error(err, "No source specified", "operation", operation)
+		if operation == OperationNormal { // Poller management and status updates for normal flow
+			r.stopGitPoller(proxyNamespacedName, logger)
+			if cdk8sAppProxy != nil {
+				_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.SourceNotSpecifiedReason, err.Error(), err, false)
+			}
+		} else if operation == OperationDeletion && cdk8sAppProxy != nil {
+			// For deletion, if source can't be determined, we might still want to remove finalizer.
+			_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.SourceNotSpecifiedReason, "Cannot determine resources to delete: "+err.Error(), err, true)
 		}
-		// Use the new consolidated error handler - removeFinalizer = false for normal operations
-		_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.SourceNotSpecifiedReason, "No GitRepository specified", err, false)
 
 		return "", "", nil, err
 	}
-
-	return appSourcePath, currentCommitHash, cleanupFunc, nil
-}
-
-func (r *Reconciler) prepareGitSource(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (string, string, func(), error) {
-	gitSpec := cdk8sAppProxy.Spec.GitRepository
-	logger.Info("Determined source type: GitRepository", "url", gitSpec.URL, "reference", gitSpec.Reference, "path", gitSpec.Path)
-
-	tempDir, err := os.MkdirTemp("", "cdk8s-git-clone-")
-	if err != nil {
-		logger.Error(err, "Failed to create temp directory for git clone")
-		_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCloneFailedReason, "Failed to create temp dir for git clone", err, false)
-
-		return "", "", nil, err
-	}
-
-	cleanupFunc := func() {
-		if err := os.RemoveAll(tempDir); err != nil {
-			logger.Error(err, "Failed to remove temporary clone directory", "tempDir", tempDir)
-		}
-	}
-
-	logger.Info("Created temporary directory for clone", "tempDir", tempDir)
-
-	// Clone repository
-	if err := r.cloneGitRepository(ctx, cdk8sAppProxy, gitSpec, tempDir, logger, OperationNormal); err != nil {
-		cleanupFunc()
-
-		return "", "", nil, err
-	}
-
-	// Checkout-specific reference if specified
-	if err := r.checkoutGitReference(ctx, cdk8sAppProxy, gitSpec, tempDir, logger, OperationNormal); err != nil {
-		cleanupFunc()
-
-		return "", "", nil, err
-	}
-
-	// Determine a final app source path
-	appSourcePath := tempDir
-	if gitSpec.Path != "" {
-		appSourcePath = filepath.Join(tempDir, gitSpec.Path)
-		logger.Info("Adjusted appSourcePath for repository subpath", "subPath", gitSpec.Path, "finalPath", appSourcePath)
-	}
-
-	// Get current commit hash inline
-	logger.Info("Attempting to retrieve current commit hash from Git repository", "repoDir", tempDir)
-	repo, err := git.PlainOpen(tempDir)
-	if err != nil {
-		cleanupFunc()
-
-		return "", "", nil, r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCloneFailedReason, "Failed to open git repository: "+err.Error(), err, false)
-	}
-
-	headRef, err := repo.Head()
-	if err != nil {
-		cleanupFunc()
-
-		return "", "", nil, r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.GitCloneFailedReason, "Failed to get HEAD reference from git repository: "+err.Error(), err, false)
-	}
-
-	currentCommitHash := headRef.Hash().String()
-	logger.Info("Successfully retrieved current commit hash from Git repository", "commitHash", currentCommitHash)
 
 	return appSourcePath, currentCommitHash, cleanupFunc, nil
 }

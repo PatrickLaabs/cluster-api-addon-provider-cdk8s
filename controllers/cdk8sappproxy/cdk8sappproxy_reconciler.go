@@ -71,7 +71,7 @@ func (r *Reconciler) reconcileDelete(ctx context.Context, cdk8sAppProxy *addonsv
 	}
 
 	// Get a source path for deletion
-	appSourcePath, cleanup, err := r.prepareSourceForDeletion(ctx, cdk8sAppProxy, logger)
+	appSourcePath, _, cleanup, err := r.prepareSource(ctx, cdk8sAppProxy, proxyNamespacedName, logger, OperationDeletion)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -114,7 +114,7 @@ func (r *Reconciler) reconcileNormal(ctx context.Context, cdk8sAppProxy *addonsv
 	}
 
 	// Prepare a source path and get current commit hash
-	appSourcePath, currentCommitHash, cleanup, err := r.prepareSource(ctx, cdk8sAppProxy, proxyNamespacedName, logger)
+	appSourcePath, currentCommitHash, cleanup, err := r.prepareSource(ctx, cdk8sAppProxy, proxyNamespacedName, logger, OperationNormal)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -377,7 +377,7 @@ func (r *Reconciler) handleSkipApply(ctx context.Context, cdk8sAppProxy *addonsv
 
 func (r *Reconciler) reestablishWatchesForExistingResources(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) error {
 	// Get the source and parse resources to know what should be watched
-	appSourcePath, _, cleanup, err := r.prepareSource(ctx, cdk8sAppProxy, types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}, logger)
+	appSourcePath, _, cleanup, err := r.prepareSource(ctx, cdk8sAppProxy, types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}, logger, OperationNormal)
 	if err != nil {
 		return err
 	}
