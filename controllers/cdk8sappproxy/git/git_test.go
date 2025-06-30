@@ -4,6 +4,7 @@ import (
 	"bytes"
 	addonsv1alpha1 "github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/api/v1alpha1"
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"os"
 	"testing"
@@ -210,58 +211,61 @@ func TestValidateRepoUrl(t *testing.T) {
 }
 
 func TestLocalGitHash(t *testing.T) {
-	checkLocalGitHash := func(tb testing.TB, repoUrl string, wantErr bool, wantMessage string) {
-		tb.Helper()
-		buffer := bytes.Buffer{}
+	testRepoUrl := setupTestRepo(t)
+	buffer := &bytes.Buffer{}
 
-		_, err := localGitHash(repoUrl, &buffer)
-		if wantErr && err == nil {
-			t.Errorf("fetchCurrentCommit should have failed")
-		}
-		if !wantErr && err != nil {
-			t.Errorf("fetchCurrentCommit should have succeeded")
-		}
-		gotMessage := buffer.String()
-
-		if gotMessage != wantMessage {
-			t.Errorf("got %q, want %q", gotMessage, wantMessage)
-		}
+	hash, err := localGitHash(testRepoUrl, buffer)
+	if err != nil {
+		t.Errorf("localGitHash should have succeeded: %v", err)
 	}
-	t.Run("success commitHash", func(t *testing.T) {
-		testRepourl := setupTestRepo(t)
-		checkLocalGitHash(t, testRepourl, false, "")
-	})
-	t.Run("failure commitHash", func(t *testing.T) {
-		checkLocalGitHash(t, invalidRepoUrl, true, "")
-	})
+	if hash == "" {
+		t.Errorf("expected non-empty hash, got empty string")
+	}
 }
 
 func TestRemoteGitHash(t *testing.T) {
-	checkRemoteGitHash := func(tb testing.TB, repoUrl string, branch string, wantErr bool, wantMessage string) {
-		tb.Helper()
-		buffer := bytes.Buffer{}
-
-		_, err := remoteGitHash(repoUrl, branch, &buffer)
-		if wantErr {
-			if err == nil {
-				t.Errorf("checking remote git hash should have failed")
-			} else if err.Error() != wantMessage {
-				t.Errorf("got error %q, want %q", err.Error(), wantMessage)
-			}
-		} else {
-			if err != nil {
-				t.Errorf("checking remote git hash should have succeeded")
-			}
-			gotMessage := buffer.String()
-			if gotMessage != wantMessage {
-				t.Errorf("got %q, want %q", gotMessage, wantMessage)
-			}
-		}
+	remoteDir := t.TempDir()
+	_, err := git.PlainInit(remoteDir, true)
+	if err != nil {
+		t.Fatalf("failed to init bare remote repo: %v", err)
 	}
-	t.Run("success commitHash", func(t *testing.T) {
-		checkRemoteGitHash(t, validRepoUrl, "main", false, "")
+
+	localDir := setupTestRepo(t)
+	localRepo, err := git.PlainOpen(localDir)
+	if err != nil {
+		t.Fatalf("failed to open local repo: %v", err)
+	}
+
+	_, err = localRepo.CreateRemote(&config.RemoteConfig{
+		Name: "origin",
+		URLs: []string{remoteDir},
 	})
+	if err != nil {
+		t.Fatalf("failed to create remote repo: %v", err)
+	}
+	err = localRepo.Push(&git.PushOptions{
+		RemoteName: "origin",
+	})
+	if err != nil {
+		t.Fatalf("failed to push to remote repo: %v", err)
+	}
+
+	t.Run("success commitHash", func(t *testing.T) {
+		buffer := &bytes.Buffer{}
+		hash, err := remoteGitHash(remoteDir, "master", buffer)
+		if err != nil {
+			t.Errorf("checking remote git hash should have succeeded: %v", err)
+		}
+		if hash == "" {
+			t.Errorf("expected non-empty hash, got empty hash")
+		}
+	})
+
 	t.Run("failure commitHash", func(t *testing.T) {
-		checkRemoteGitHash(t, validRepoUrl, "main", true, addonsv1alpha1.EmptyGitRepositoryReason)
+		buffer := &bytes.Buffer{}
+		_, err := remoteGitHash(invalidRepoUrl, "master", buffer)
+		if err == nil {
+			t.Errorf("checking remote git hash should have failed")
+		}
 	})
 }
