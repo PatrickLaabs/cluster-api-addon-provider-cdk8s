@@ -12,9 +12,7 @@ import (
 	"path/filepath"
 )
 
-func (r *Reconciler) prepareSource(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, proxyNamespacedName types.NamespacedName, logger logr.Logger, operation string) (string, string, error) {
-	var appSourcePath string
-	var currentCommitHash string
+func (r *Reconciler) prepareSource(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, proxyNamespacedName types.NamespacedName, logger logr.Logger, operation string) (appSourcePath string, currentCommitHash string, err error) {
 	gitImpl := &gitoperator.GitImplementer{}
 	var buf bytes.Buffer
 	gitSpec := cdk8sAppProxy.Spec.GitRepository
@@ -52,17 +50,15 @@ func (r *Reconciler) prepareSource(ctx context.Context, cdk8sAppProxy *addonsv1a
 		}
 	default:
 		err := errors.New("no source specified")
-		if operation == OperationNormal { // Poller management and status updates for normal flow
-			//r.stopGitPoller(proxyNamespacedName, logger)
+		if operation == OperationNormal {
 			if cdk8sAppProxy != nil {
 				_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.EmptyGitRepositoryReason, "No source specified during "+operation, err, false)
 			}
 		} else if operation == OperationDeletion && cdk8sAppProxy != nil {
-			// For deletion, if source can't be determined, we might still want to remove finalizer.
 			_ = r.updateStatusWithError(ctx, cdk8sAppProxy, addonsv1alpha1.EmptyGitRepositoryReason, "No source specified, cannot determine resources to delete during "+operation, err, true)
 		}
 
-		return "", "", err
+		return appSourcePath, currentCommitHash, err
 	}
 
 	return appSourcePath, currentCommitHash, nil

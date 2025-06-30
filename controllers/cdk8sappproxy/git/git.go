@@ -59,12 +59,12 @@ func (g *GitImplementer) Poll(repoUrl string, branch string, directory string, w
 
 	err = validateRepoUrl(repoUrl, writer)
 	if err != nil {
-		fmt.Fprintf(writer, "%s", addonsv1alpha1.GitHashFailureReason)
+		fmt.Fprintf(writer, "%s", addonsv1alpha1.InvalidGitRepositoryReason)
 
 		return detectedChanges, err
 	}
 	if directory == "" {
-		fmt.Fprintf(writer, "%s", addonsv1alpha1.GitHashFailureReason)
+		fmt.Fprintf(writer, "%s", addonsv1alpha1.EmptyGitRepositoryReason)
 
 		return detectedChanges, err
 	}
@@ -72,7 +72,8 @@ func (g *GitImplementer) Poll(repoUrl string, branch string, directory string, w
 	// get hash from local repo
 	localHash, err := localGitHash(directory, writer)
 	if err != nil {
-		fmt.Fprintf(writer, "%s", addonsv1alpha1.GitHashFailureReason)
+		//fmt.Fprintf(writer, "%s", addonsv1alpha1.GitHashFailureReason)
+		fmt.Fprintf(writer, "localGitHash error")
 
 		return detectedChanges, err
 	}
@@ -80,7 +81,8 @@ func (g *GitImplementer) Poll(repoUrl string, branch string, directory string, w
 	// Get Hash from remote repo
 	remoteHash, err := remoteGitHash(repoUrl, branch, writer)
 	if err != nil {
-		fmt.Fprintf(writer, "%s", addonsv1alpha1.GitHashFailureReason)
+		//fmt.Fprintf(writer, "%s", addonsv1alpha1.GitHashFailureReason)
+		fmt.Fprintf(writer, "remoteGitHash error")
 
 		return detectedChanges, err
 	}
@@ -118,17 +120,20 @@ func localGitHash(directory string, writer *bytes.Buffer) (hash string, err erro
 	hash = "0"
 	repo, err := git.PlainOpen(directory)
 	if err != nil {
-		return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
+		//return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
+		return hash, fmt.Errorf("failed to open local git repository: %v", err)
 	}
 
 	headRef, err := repo.Head()
 	if err != nil {
-		return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
+		//return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
+		return hash, fmt.Errorf("failed to get head for local git repo: %v", err)
 	}
 
 	hash = headRef.Hash().String()
 	if hash == "" {
-		return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
+		//return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
+		return hash, fmt.Errorf("failed to retrieve hash for local git repo")
 	}
 
 	return hash, err
@@ -149,7 +154,8 @@ func remoteGitHash(repoUrl string, branch string, writer *bytes.Buffer) (hash st
 
 	refs, err := repo.List(&git.ListOptions{})
 	if err != nil {
-		return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
+		//return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
+		return hash, fmt.Errorf("failed to list remote refs: %v", err)
 	}
 
 	refName := plumbing.NewBranchReferenceName(branch)
@@ -159,5 +165,6 @@ func remoteGitHash(repoUrl string, branch string, writer *bytes.Buffer) (hash st
 		}
 	}
 
-	return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
+	//return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
+	return hash, fmt.Errorf("failed to find remote ref for branch %s: %v", branch, refs)
 }
