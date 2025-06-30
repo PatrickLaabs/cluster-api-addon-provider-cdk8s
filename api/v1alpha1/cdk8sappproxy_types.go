@@ -17,7 +17,6 @@ limitations under the License.
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 )
@@ -41,12 +40,6 @@ type GitRepositorySpec struct {
 	// Defaults to the root of the repository.
 	// +kubebuilder:validation:Required
 	Path string `json:"path"`
-
-	// AuthSecretRef is a reference to a Secret in the same namespace
-	// containing authentication credentials for the Git repository.
-	// The secret must contain 'username' and 'password' fields.
-	// +kubebuilder:validation:Optional
-	AuthSecretRef *corev1.LocalObjectReference `json:"authSecretRef,omitempty"`
 }
 
 // Cdk8sAppProxySpec defines the desired state of Cdk8sAppProxy.

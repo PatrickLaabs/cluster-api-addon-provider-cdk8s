@@ -72,20 +72,27 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 FROM ${deployment_base_image}:${deployment_base_image_tag}
 
 # Set shell with pipefail option for better error handling
-SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+SHELL ["/bin/sh", "-o", "pipefail", "-c"]
 
 # Install Node.js and cdk8s-cli directly
 # hadolint ignore=DL3015
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates=20240203~22.04.1 curl=7.81.0-1ubuntu1.20 && \
-    curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
-    apt-get install -y nodejs=18.19.1-1nodesource1 && \
-    npm install -g cdk8s-cli@2.200.109 && \
-    curl -fsSL -o go1.24.4.linux-amd64.tar.gz https://go.dev/dl/go1.24.4.linux-amd64.tar.gz && \
-    tar -C /usr/local -xzf go1.24.4.linux-amd64.tar.gz && \
-    rm go1.24.4.linux-amd64.tar.gz && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+#RUN apt-get update && \
+#    apt-get install -y --no-install-recommends ca-certificates=20240203~22.04.1 curl=7.81.0-1ubuntu1.20 && \
+#    curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
+#    apt-get install -y nodejs=18.19.1-1nodesource1 && \
+#    npm install -g cdk8s-cli@2.200.109 && \
+#    curl -fsSL -o go1.24.4.linux-amd64.tar.gz https://go.dev/dl/go1.24.4.linux-amd64.tar.gz && \
+#    tar -C /usr/local -xzf go1.24.4.linux-amd64.tar.gz && \
+#    rm go1.24.4.linux-amd64.tar.gz && \
+#    apt-get clean && \
+#    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+RUN apk add --no-cache ca-certificates curl nodejs npm \
+    && npm install -g cdk8s-cli@2.200.109 \
+    && curl -fsSL -o go1.24.4.linux-amd64.tar.gz https://go.dev/dl/go1.24.4.linux-amd64.tar.gz \
+    && tar -C /usr/local -xzf go1.24.4.linux-amd64.tar.gz \
+    && rm go1.24.4.linux-amd64.tar.gz \
+    && rm -rf /tmp/*
 
 # Set Go environment variables
 ENV PATH=$PATH:/usr/local/go/bin
@@ -95,7 +102,7 @@ WORKDIR /
 COPY --from=builder /workspace/manager .
 
 # Create non-root user
-RUN useradd --uid 65532 --create-home --shell /bin/bash nonroot
+RUN adduser -u 65532 -D -h /home/nonroot -s /bin/sh nonroot
    
 # Switch back to non-root user (this line should already exist)
 # USER root # This was part of the removed direct install, ensure it's not re-added here unless needed for COPY permissions

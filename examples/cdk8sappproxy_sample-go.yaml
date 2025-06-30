@@ -9,20 +9,6 @@ spec:
     reference: "main"
     referencePollInterval: '5'
     path: "examples/cdk8s-sample-deployment"
-    # authSecretRef:
-    #   name: git-credentials
   clusterSelector: {}
     # matchLabels:
       # environment: development
-# ---
-# apiVersion: v1
-# kind: Secret
-# metadata:
-#   name: git-credentials
-#   namespace: default
-# type: Opaque
-# data:
-#   # Base64 encoded username
-#   username: <base64-encoded-username>
-#   # Base64 encoded password/token
-#   password: <base64-encoded-password-or-token>
