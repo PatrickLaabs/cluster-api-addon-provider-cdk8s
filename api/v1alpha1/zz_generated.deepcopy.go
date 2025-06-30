@@ -21,7 +21,6 @@ limitations under the License.
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/cluster-api/api/v1beta1"
@@ -135,11 +134,6 @@ func (in *GitRepositorySpec) DeepCopyInto(out *GitRepositorySpec) {
 	if in.ReferencePollInterval != nil {
 		in, out := &in.ReferencePollInterval, &out.ReferencePollInterval
 		*out = new(v1.Duration)
-		**out = **in
-	}
-	if in.AuthSecretRef != nil {
-		in, out := &in.AuthSecretRef, &out.AuthSecretRef
-		*out = new(corev1.LocalObjectReference)
 		**out = **in
 	}
 }

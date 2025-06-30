@@ -1,7 +1,9 @@
 package cdk8sappproxy
 
 import (
+	"bytes"
 	"context"
+	gitoperator "github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/controllers/cdk8sappproxy/git"
 	"time"
 
 	addonsv1alpha1 "github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/api/v1alpha1"
@@ -62,7 +64,7 @@ func (r *Reconciler) reconcileDelete(ctx context.Context, cdk8sAppProxy *addonsv
 	proxyNamespacedName := types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}
 
 	// Stop any active git poller
-	r.stopGitPoller(proxyNamespacedName, logger)
+	//r.stopGitPoller(proxyNamespacedName, logger)
 
 	if !controllerutil.ContainsFinalizer(cdk8sAppProxy, Finalizer) {
 		logger.Info("Finalizer already removed, nothing to do.")
@@ -71,11 +73,10 @@ func (r *Reconciler) reconcileDelete(ctx context.Context, cdk8sAppProxy *addonsv
 	}
 
 	// Get a source path for deletion
-	appSourcePath, _, cleanup, err := r.prepareSource(ctx, cdk8sAppProxy, proxyNamespacedName, logger, OperationDeletion)
+	appSourcePath, _, err := r.prepareSource(ctx, cdk8sAppProxy, proxyNamespacedName, logger, OperationDeletion)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	defer cleanup()
 
 	// Get resources to delete
 	parsedResources, err := r.synthesizeAndParseResources(appSourcePath, logger)
@@ -99,6 +100,7 @@ func (r *Reconciler) reconcileDelete(ctx context.Context, cdk8sAppProxy *addonsv
 func (r *Reconciler) reconcileNormal(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("cdk8sappproxy", types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}, "reconcile_type", "normal")
 	logger.Info("Starting reconcileNormal")
+	gitImpl := &gitoperator.GitImplementer{}
 
 	proxyNamespacedName := types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}
 
@@ -114,14 +116,48 @@ func (r *Reconciler) reconcileNormal(ctx context.Context, cdk8sAppProxy *addonsv
 	}
 
 	// Prepare a source path and get current commit hash
-	appSourcePath, currentCommitHash, cleanup, err := r.prepareSource(ctx, cdk8sAppProxy, proxyNamespacedName, logger, OperationNormal)
+	appSourcePath, currentCommitHash, err := r.prepareSource(ctx, cdk8sAppProxy, proxyNamespacedName, logger, OperationNormal)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	defer cleanup()
 
-	// Manage git poller lifecycle
-	r.manageGitPollerLifecycle(ctx, cdk8sAppProxy, proxyNamespacedName, logger)
+	pollInterval := 1 * time.Minute
+	if cdk8sAppProxy.Spec.GitRepository.ReferencePollInterval != nil {
+		pollInterval = cdk8sAppProxy.Spec.GitRepository.ReferencePollInterval.Duration
+	}
+
+	repoUrl := cdk8sAppProxy.Spec.GitRepository.URL
+	branch := cdk8sAppProxy.Spec.GitRepository.Reference
+	tempDirPattern := "/tmp/cdk8s-git-clone-"
+	buf := &bytes.Buffer{}
+	polling := false
+
+	ctx, _ = context.WithCancel(ctx)
+
+	go func() {
+		ticker := time.NewTicker(pollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				logger.Info("Polling git repository for changes", "repoUrl", repoUrl, "branch", branch)
+				polling, err = gitImpl.Poll(repoUrl, branch, tempDirPattern, buf)
+				if err != nil {
+					logger.Error(err, "Polling git repository", "repoUrl", repoUrl, "branch", branch)
+				}
+				if polling {
+					logger.Info("Detected changes in git repository, proceeding with reconciliation.")
+					appSourcePath, currentCommitHash, err = r.prepareSource(ctx, cdk8sAppProxy, proxyNamespacedName, logger, OperationNormal)
+					if err != nil {
+						logger.Error(err, "Prepare source for reconciliation")
+					}
+				}
+			case <-ctx.Done():
+				logger.Info("Stopping git repository polling loop due to context cancellation.")
+				return
+			}
+		}
+	}()
 
 	// Synthesize and parse resources
 	parsedResources, err := r.synthesizeAndParseResources(appSourcePath, logger)
@@ -377,11 +413,10 @@ func (r *Reconciler) handleSkipApply(ctx context.Context, cdk8sAppProxy *addonsv
 
 func (r *Reconciler) reestablishWatchesForExistingResources(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) error {
 	// Get the source and parse resources to know what should be watched
-	appSourcePath, _, cleanup, err := r.prepareSource(ctx, cdk8sAppProxy, types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}, logger, OperationNormal)
+	appSourcePath, _, err := r.prepareSource(ctx, cdk8sAppProxy, types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}, logger, OperationNormal)
 	if err != nil {
 		return err
 	}
-	defer cleanup()
 
 	parsedResources, err := r.synthesizeAndParseResources(appSourcePath, logger)
 	if err != nil {

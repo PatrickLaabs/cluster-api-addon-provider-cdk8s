@@ -22,12 +22,20 @@ import clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 const (
 	// DeploymentProgressingCondition indicates that the cdk8s application deployment is progressing.
 	DeploymentProgressingCondition clusterv1.ConditionType = "DeploymentProgressing"
-	// GitCloneFailedReason indicates that git clone operation failed.
-	GitCloneFailedReason = "GitCloneFailed"
-	// GitCheckoutFailedReason indicates that git checkout operation failed.
-	GitCheckoutFailedReason = "GitCheckoutFailed"
-	// SourceNotSpecifiedReason indicates that no source (GitRepository) was specified.
-	SourceNotSpecifiedReason = "SourceNotSpecified"
+	// GitCloneSuccessCondition indicates that the git clone operation was successful.
+	GitCloneSuccessCondition = "GitCloneSuccess"
+	// GitCloneFailedCondition indicates that git clone operation failed.
+	GitCloneFailedCondition = "GitCloneFailed"
+	// ValidGitRepositoryReason indicates that the given repository is valid.
+	ValidGitRepositoryReason = "ValidGitRepository"
+	// InvalidGitRepositoryReason indicates that the given repository is invalid.
+	InvalidGitRepositoryReason = "InvalidGitRepository"
+	// EmptyGitRepositoryReason indicates that no repository has been defined.
+	EmptyGitRepositoryReason = "EmptyGitRepository"
+	// GitHashSuccessReason indicates that the current commit hash was retrievable.
+	GitHashSuccessReason = "GitHashSuccess"
+	// GitHashFailureReason indicates that the current commit hash was not retrievable.
+	GitHashFailureReason     = "GitHashFailure"
 	GitOperationFailedReason = "GitOperationFailed"
 	// Cdk8sSynthFailedReason indicates that cdk8s synth operation failed.
 	Cdk8sSynthFailedReason = "Cdk8sSynthFailed"
@@ -53,8 +61,6 @@ const (
 	KubeconfigUnavailableReason = "KubeconfigUnavailable"
 	// ResourceApplyFailedReason indicates that applying a resource to a target cluster failed.
 	ResourceApplyFailedReason = "ResourceApplyFailed"
-	// GitAuthSecretInvalidReason indicates that the specified Git authentication Secret is invalid or missing required fields.
-	GitAuthSecretInvalidReason string = "GitAuthSecretInvalid"
 	// GitAuthenticationFailedReason indicates that Git authentication failed (e.g., bad credentials).
 	GitAuthenticationFailedReason string = "GitAuthenticationFailed"
 )
