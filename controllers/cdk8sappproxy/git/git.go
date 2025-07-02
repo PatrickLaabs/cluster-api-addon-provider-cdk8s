@@ -14,7 +14,7 @@ import (
 type GitOperator interface {
 	Clone(repoUrl string, directory string, writer *bytes.Buffer) (err error)
 	Poll(repo string, branch string, directory string, writer *bytes.Buffer) (changes bool, err error)
-	Hash(repo string) (hash string, err error)
+	Hash(repo string, branch string) (hash string, err error)
 }
 
 // GitImplementer implements the GitOperator interface.
@@ -54,7 +54,7 @@ func (g *GitImplementer) Poll(repo string, branch string, directory string, writ
 	}
 
 	// Get hash from local repo.
-	localHash, err := g.Hash(directory)
+	localHash, err := g.Hash(directory, branch)
 	if err != nil {
 		fmt.Fprintf(writer, "localGitHash error")
 
@@ -62,7 +62,7 @@ func (g *GitImplementer) Poll(repo string, branch string, directory string, writ
 	}
 
 	// Get Hash from remote repo
-	remoteHash, err := g.Hash(repo)
+	remoteHash, err := g.Hash(repo, branch)
 	if err != nil {
 		fmt.Fprintf(writer, "remoteGitHash error")
 
@@ -79,11 +79,7 @@ func (g *GitImplementer) Poll(repo string, branch string, directory string, writ
 }
 
 // Hash retrieves the hash of the given repository.
-func (g *GitImplementer) Hash(repo string) (hash string, err error) {
-	//cdk8sAppProxy := &addonsv1alpha1.Cdk8sAppProxy{}
-	//branch := cdk8sAppProxy.Spec.GitRepository.Reference
-	branch := "main"
-
+func (g *GitImplementer) Hash(repo string, branch string) (hash string, err error) {
 	switch {
 	case isUrl(repo):
 		remoterepo := git.NewRemote(nil, &config.RemoteConfig{
