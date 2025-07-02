@@ -89,7 +89,7 @@ func (r *Reconciler) reconcileNormal(ctx context.Context, cdk8sAppProxy *addonsv
 	}
 
 	// Prepare a source path and get current commit hash
-	appSourcePath, _, err := r.prepareSource(ctx, cdk8sAppProxy, proxyNamespacedName, logger, OperationNormal)
+	appSourcePath, _, err := r.prepareSource(cdk8sAppProxy, logger)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -146,7 +146,7 @@ func (r *Reconciler) reconcileNormal(ctx context.Context, cdk8sAppProxy *addonsv
 				}
 				if polling {
 					logger.Info("Detected changes in git repository, proceeding with reconciliation.")
-					appSourcePath, _, err = r.prepareSource(ctx, cdk8sAppProxy, proxyNamespacedName, logger, OperationNormal)
+					appSourcePath, _, err = r.prepareSource(cdk8sAppProxy, logger)
 					if err != nil {
 						logger.Error(err, "Prepare source for reconciliation")
 					}
@@ -195,34 +195,6 @@ func (r *Reconciler) reconcileNormal(ctx context.Context, cdk8sAppProxy *addonsv
 	return ctrl.Result{}, nil
 }
 
-func (r *Reconciler) handleDeletionTriggerAnnotation(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (bool, error) {
-	deletionTriggerAnnotationKey := "cdk8s.addons.cluster.x-k8s.io/reconcile-on-delete-trigger"
-	forceSynthAndApplyDueToDeletion := false
-
-	if cdk8sAppProxy.Annotations != nil {
-		if _, ok := cdk8sAppProxy.Annotations[deletionTriggerAnnotationKey]; ok {
-			forceSynthAndApplyDueToDeletion = true
-			logger.Info("Reconciliation was triggered by a resource deletion annotation.", "annotationKey", deletionTriggerAnnotationKey)
-
-			// Clear the annotation
-			logger.Info("Attempting to clear the resource deletion trigger annotation.", "annotationKey", deletionTriggerAnnotationKey)
-			delete(cdk8sAppProxy.Annotations, deletionTriggerAnnotationKey)
-			if len(cdk8sAppProxy.Annotations) == 0 {
-				cdk8sAppProxy.Annotations = nil
-			}
-
-			if err := r.Update(ctx, cdk8sAppProxy); err != nil {
-				logger.Error(err, "Failed to clear the resource deletion trigger annotation. Requeuing.", "annotationKey", deletionTriggerAnnotationKey)
-
-				return false, err
-			}
-			logger.Info("Successfully cleared the resource deletion trigger annotation.", "annotationKey", deletionTriggerAnnotationKey)
-		}
-	}
-
-	return forceSynthAndApplyDueToDeletion, nil
-}
-
 func (r *Reconciler) ensureFinalizer(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (bool, error) {
 	if !controllerutil.ContainsFinalizer(cdk8sAppProxy, Finalizer) {
 		logger.Info("Adding finalizer", "finalizer", Finalizer)
@@ -250,26 +222,6 @@ func (r *Reconciler) handleNoResources(ctx context.Context, cdk8sAppProxy *addon
 	}
 
 	return nil
-}
-
-func (r *Reconciler) determineIfApplyNeeded(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, parsedResources []*unstructured.Unstructured, currentCommitHash string, forceSynthAndApplyDueToDeletion bool, logger logr.Logger) (bool, clusterv1.ClusterList, error) {
-	var clusterList clusterv1.ClusterList
-
-	// Check for git or annotation triggers
-	triggeredByGitOrAnnotation := r.checkGitOrAnnotationTriggers(cdk8sAppProxy, currentCommitHash, forceSynthAndApplyDueToDeletion, logger)
-
-	if !triggeredByGitOrAnnotation {
-		// Check if resources are missing on clusters
-		foundMissingResources, list, err := r.verifyResourcesOnClusters(ctx, cdk8sAppProxy, parsedResources, logger)
-		if err != nil {
-			return false, clusterList, err
-		}
-		clusterList = list
-
-		return foundMissingResources, clusterList, nil
-	}
-
-	return true, clusterList, nil
 }
 
 func (r *Reconciler) applyNeeded(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, parsedResources []*unstructured.Unstructured, logger logr.Logger) (bool, clusterv1.ClusterList, error) {
@@ -402,34 +354,9 @@ func (r *Reconciler) checkGitOrAnnotationTriggers(cdk8sAppProxy *addonsv1alpha1.
 	return false
 }
 
-func (r *Reconciler) handleSkipApply(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, currentCommitHash string, logger logr.Logger) error {
-	logger.Info("Skipping resource application: no Git changes, no deletion annotation, and all resources verified present.")
-
-	// Re-establish watches for existing resources after controller restart
-	if err := r.reestablishWatchesForExistingResources(ctx, cdk8sAppProxy, logger); err != nil {
-		logger.Error(err, "Failed to re-establish watches for existing resources")
-	}
-
-	cdk8sAppProxy.Status.ObservedGeneration = cdk8sAppProxy.Generation
-	conditions.MarkTrue(cdk8sAppProxy, addonsv1alpha1.DeploymentProgressingCondition)
-
-	if cdk8sAppProxy.Spec.GitRepository != nil && cdk8sAppProxy.Spec.GitRepository.URL != "" && currentCommitHash != "" {
-		cdk8sAppProxy.Status.LastProcessedGitHash = currentCommitHash
-		logger.Info("Updated LastProcessedGitHash to current commit hash as no changes or missing resources were found.", "hash", currentCommitHash)
-	}
-
-	if err := r.Status().Update(ctx, cdk8sAppProxy); err != nil {
-		logger.Error(err, "Failed to update status after skipping resource application.")
-
-		return err
-	}
-
-	return nil
-}
-
 func (r *Reconciler) reestablishWatchesForExistingResources(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) error {
 	// Get the source and parse resources to know what should be watched
-	appSourcePath, _, err := r.prepareSource(ctx, cdk8sAppProxy, types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}, logger, OperationNormal)
+	appSourcePath, _, err := r.prepareSource(cdk8sAppProxy, logger)
 	if err != nil {
 		return err
 	}
@@ -587,28 +514,4 @@ func (r *Reconciler) applyResourcesToClusters(ctx context.Context, cdk8sAppProxy
 	logger.Info("Successfully reconciled Cdk8sAppProxy and applied/verified resources.")
 
 	return ctrl.Result{}, nil
-}
-
-func (r *Reconciler) triggerReconciliation(ctx context.Context, proxyName types.NamespacedName, logger logr.Logger) error {
-	proxyToAnnotate := &addonsv1alpha1.Cdk8sAppProxy{}
-	if err := r.Get(ctx, proxyName, proxyToAnnotate); err != nil {
-		logger.Error(err, "Failed to get latest Cdk8sAppProxy for annotation update")
-
-		return err
-	}
-
-	if proxyToAnnotate.Annotations == nil {
-		proxyToAnnotate.Annotations = make(map[string]string)
-	}
-	proxyToAnnotate.Annotations["cdk8s.addons.cluster.x-k8s.io/git-poll-trigger"] = time.Now().Format(time.RFC3339Nano)
-
-	if err := r.Update(ctx, proxyToAnnotate); err != nil {
-		logger.Error(err, "Failed to update Cdk8sAppProxy annotations to trigger reconciliation")
-
-		return err
-	}
-
-	logger.Info("Successfully updated annotations to trigger reconciliation.")
-
-	return nil
 }

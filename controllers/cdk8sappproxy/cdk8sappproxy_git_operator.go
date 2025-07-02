@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 )
 
-func (r *Reconciler) prepareSource(cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger, operation string) (appSourcePath string, currentCommitHash string, err error) {
+func (r *Reconciler) prepareSource(cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (appSourcePath string, currentCommitHash string, err error) {
 	gitImpl := &gitoperator.GitImplementer{}
 	var buf bytes.Buffer
 	gitSpec := cdk8sAppProxy.Spec.GitRepository
@@ -33,7 +33,7 @@ func (r *Reconciler) prepareSource(cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, 
 
 		if gitSpec.Path != "" {
 			appSourcePath = filepath.Join(directory, gitSpec.Path)
-			logger.Info("Adjusted appSourcePath for repository subpath", "subPath", gitSpec.Path, "finalPath", appSourcePath, "operation", operation)
+			logger.Info("Adjusted appSourcePath for repository subpath", "subPath", gitSpec.Path, "finalPath", appSourcePath)
 		}
 
 		return appSourcePath, currentCommitHash, err
