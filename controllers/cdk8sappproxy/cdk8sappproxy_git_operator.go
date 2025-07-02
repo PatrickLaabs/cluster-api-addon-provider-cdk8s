@@ -30,9 +30,14 @@ func (r *Reconciler) prepareSource(ctx context.Context, cdk8sAppProxy *addonsv1a
 			return "", "", err
 		}
 
-		retrieveCommitHash, err := gitImpl.Clone(gitSpec.URL, tempDir, &buf)
+		err = gitImpl.Clone(gitSpec.URL, tempDir, &buf)
 		if err != nil {
-			logger.Error(err, addonsv1alpha1.GitCloneFailedCondition, "Failed to clone git repository", "operation", operation)
+			logger.Error(err, addonsv1alpha1.GitCloneFailedCondition, "Failed to clone git repository")
+		}
+
+		retrieveCommitHash, err := gitImpl.Hash(tempDir)
+		if err != nil {
+			logger.Error(err, addonsv1alpha1.GitHashFailureReason, "Failed to get local git hash")
 		}
 
 		if operation == OperationNormal {

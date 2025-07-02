@@ -10,23 +10,23 @@ import (
 	"net/url"
 )
 
+// GitOperator defines the interface for git operations.
 type GitOperator interface {
-	Clone(repoUrl string, directory string, writer *bytes.Buffer) (currentCommitHash string, err error)
-	Poll(repoUrl string, branch string, directory string, writer *bytes.Buffer) (detectedChanges bool, err error)
+	Clone(repoUrl string, directory string, writer *bytes.Buffer) (err error)
+	Poll(repo string, branch string, directory string, writer *bytes.Buffer) (changes bool, err error)
+	Hash(repo string) (hash string, err error)
 }
 
+// GitImplementer implements the GitOperator interface.
 type GitImplementer struct{}
 
 // Clone clones the given repository to a local directory.
-func (g *GitImplementer) Clone(repoUrl string, directory string, writer *bytes.Buffer) (currentCommitHash string, err error) {
-	validationBuffer := new(bytes.Buffer)
-	currentCommitHash = "0"
+func (g *GitImplementer) Clone(repoUrl string, directory string, writer *bytes.Buffer) (err error) {
+	// Check if repo and directory are empty.
+	if empty(repoUrl, directory) {
+		fmt.Fprintf(writer, "%s", addonsv1alpha1.EmptyGitRepositoryReason)
 
-	err = validateRepoUrl(repoUrl, validationBuffer)
-	if err != nil {
-		fmt.Fprintf(writer, "%s", addonsv1alpha1.InvalidGitRepositoryReason)
-
-		return currentCommitHash, err
+		return fmt.Errorf("%s", addonsv1alpha1.EmptyGitRepositoryReason)
 	}
 
 	_, err = git.PlainClone(directory, false, &git.CloneOptions{
@@ -35,136 +35,122 @@ func (g *GitImplementer) Clone(repoUrl string, directory string, writer *bytes.B
 	if err != nil {
 		fmt.Fprintf(writer, addonsv1alpha1.GitCloneFailedCondition)
 
-		return currentCommitHash, err
-	}
-
-	localGitHashBuffer := new(bytes.Buffer)
-	currentCommitHash, err = localGitHash(directory, localGitHashBuffer)
-	if err != nil {
-		fmt.Fprintf(writer, addonsv1alpha1.ClusterSelectorParseFailedReason)
-
-		return currentCommitHash, err
-	}
-
-	fmt.Fprintf(writer, addonsv1alpha1.GitCloneSuccessCondition)
-
-	return currentCommitHash, err
-}
-
-// Poll polls for changes for the given remote git repository.
-// returns true, if current local commit hash and remote hash are not equal.
-func (g *GitImplementer) Poll(repoUrl string, branch string, directory string, writer *bytes.Buffer) (detectedChanges bool, err error) {
-	// Defaults to false. We only change to true if there is a difference between the hashes.
-	detectedChanges = false
-
-	err = validateRepoUrl(repoUrl, writer)
-	if err != nil {
-		fmt.Fprintf(writer, "%s", addonsv1alpha1.InvalidGitRepositoryReason)
-
-		return detectedChanges, err
-	}
-	if directory == "" {
-		fmt.Fprintf(writer, "%s", addonsv1alpha1.EmptyGitRepositoryReason)
-
-		return detectedChanges, err
-	}
-
-	// get hash from local repo
-	localHash, err := localGitHash(directory, writer)
-	if err != nil {
-		//fmt.Fprintf(writer, "%s", addonsv1alpha1.GitHashFailureReason)
-		fmt.Fprintf(writer, "localGitHash error")
-
-		return detectedChanges, err
-	}
-
-	// Get Hash from remote repo
-	remoteHash, err := remoteGitHash(repoUrl, branch, writer)
-	if err != nil {
-		//fmt.Fprintf(writer, "%s", addonsv1alpha1.GitHashFailureReason)
-		fmt.Fprintf(writer, "remoteGitHash error")
-
-		return detectedChanges, err
-	}
-
-	if localHash != remoteHash {
-		detectedChanges = true
-	}
-
-	fmt.Fprintf(writer, "%s", addonsv1alpha1.GitHashSuccessReason)
-
-	return detectedChanges, err
-}
-
-// validateRepoUrl validates the given repoUrl.
-func validateRepoUrl(repoUrl string, writer *bytes.Buffer) (err error) {
-	// Checking, if repoUrl is empty
-	if repoUrl == "" {
-		fmt.Fprintf(writer, "%s", addonsv1alpha1.EmptyGitRepositoryReason)
-
-		return fmt.Errorf("%s", addonsv1alpha1.EmptyGitRepositoryReason)
-	}
-
-	_, err = url.ParseRequestURI(repoUrl)
-	if err != nil {
-		fmt.Fprintf(writer, "%s", addonsv1alpha1.InvalidGitRepositoryReason)
-
-		return fmt.Errorf("%s", addonsv1alpha1.InvalidGitRepositoryReason)
+		return err
 	}
 
 	return err
 }
 
-// localGitHash checks the current git hash for the given local repository.
-func localGitHash(directory string, writer *bytes.Buffer) (hash string, err error) {
-	hash = "0"
-	repo, err := git.PlainOpen(directory)
+// Poll polls for changes for the given remote git repository. Returns true, if current local commit hash and remote hash are not equal.
+func (g *GitImplementer) Poll(repo string, branch string, directory string, writer *bytes.Buffer) (changes bool, err error) {
+	// Defaults to false. We only change to true if there is a difference between the hashes.
+	changes = false
+
+	// Check if repo and directory are empty.
+	if empty(repo, directory) {
+		fmt.Fprintf(writer, "%s", addonsv1alpha1.EmptyGitRepositoryReason)
+
+		return changes, fmt.Errorf("%s", addonsv1alpha1.EmptyGitRepositoryReason)
+	}
+
+	// Get hash from local repo.
+	localHash, err := g.Hash(directory)
 	if err != nil {
-		//return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
-		return hash, fmt.Errorf("failed to open local git repository: %v", err)
+		fmt.Fprintf(writer, "localGitHash error")
+
+		return changes, err
 	}
 
-	headRef, err := repo.Head()
+	// Get Hash from remote repo
+	remoteHash, err := g.Hash(repo)
 	if err != nil {
-		//return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
-		return hash, fmt.Errorf("failed to get head for local git repo: %v", err)
+		fmt.Fprintf(writer, "remoteGitHash error")
+
+		return changes, err
 	}
 
-	hash = headRef.Hash().String()
-	if hash == "" {
-		//return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
-		return hash, fmt.Errorf("failed to retrieve hash for local git repo")
+	if localHash != remoteHash {
+		changes = true
 	}
 
+	fmt.Fprintf(writer, "%s", addonsv1alpha1.GitHashSuccessReason)
+
+	return changes, err
+}
+
+// Hash retrieves the hash of the given repository.
+func (g *GitImplementer) Hash(repo string) (hash string, err error) {
+	//cdk8sAppProxy := &addonsv1alpha1.Cdk8sAppProxy{}
+	//branch := cdk8sAppProxy.Spec.GitRepository.Reference
+	branch := "main"
+
+	switch {
+	case isUrl(repo):
+		remoterepo := git.NewRemote(nil, &config.RemoteConfig{
+			URLs: []string{repo},
+			Name: "origin",
+		})
+
+		refs, err := remoterepo.List(&git.ListOptions{})
+		if err != nil {
+			//return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
+			return hash, fmt.Errorf("failed to list remote refs: %v", err)
+		}
+
+		refName := plumbing.NewBranchReferenceName(branch)
+		for _, ref := range refs {
+			if ref.Name() == refName {
+				return ref.Hash().String(), nil
+			}
+		}
+
+		//return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
+		return hash, fmt.Errorf("failed to find remote ref for branch %s: %v", branch, refs)
+	case !isUrl(repo):
+		localRepo, err := git.PlainOpen(repo)
+		if err != nil {
+			//return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
+			return hash, fmt.Errorf("failed to open local git repository: %v", err)
+		}
+
+		headRef, err := localRepo.Head()
+		if err != nil {
+			//return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
+			return hash, fmt.Errorf("failed to get head for local git repo: %v", err)
+		}
+
+		hash = headRef.Hash().String()
+		if hash == "" {
+			//return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
+			return hash, fmt.Errorf("failed to retrieve hash for local git repo")
+		}
+
+		return hash, err
+	}
 	return hash, err
 }
 
-// remoteGitHash checks the git hash for the given remote repository.
-func remoteGitHash(repoUrl string, branch string, writer *bytes.Buffer) (hash string, err error) {
-	// validates the given remote repository url
-	err = validateRepoUrl(repoUrl, nil)
+// isUrl checks if the given string is a valid URL.
+func isUrl(repo string) bool {
+	if repo == "" {
+		return false
+	}
+	parsedUrl, err := url.ParseRequestURI(repo)
 	if err != nil {
-		return hash, err
+		return false
 	}
 
-	repo := git.NewRemote(nil, &config.RemoteConfig{
-		URLs: []string{repoUrl},
-		Name: "origin",
-	})
-
-	refs, err := repo.List(&git.ListOptions{})
-	if err != nil {
-		//return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
-		return hash, fmt.Errorf("failed to list remote refs: %v", err)
+	if parsedUrl.Scheme != "" {
+		return true
+	} else {
+		return false
 	}
+}
 
-	refName := plumbing.NewBranchReferenceName(branch)
-	for _, ref := range refs {
-		if ref.Name() == refName {
-			return ref.Hash().String(), nil
-		}
+// empty checks if the repo and directory strings are empty.
+func empty(repo string, directory string) bool {
+	if repo == "" || directory == "" {
+		return true
 	}
-
-	//return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
-	return hash, fmt.Errorf("failed to find remote ref for branch %s: %v", branch, refs)
+	return false
 }
