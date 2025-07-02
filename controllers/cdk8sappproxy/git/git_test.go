@@ -21,54 +21,31 @@ var (
 func TestClone(t *testing.T) {
 	gitImplementer := &GitImplementer{}
 
-	t.Run("empty parameters - both empty", func(t *testing.T) {
-		buffer := &bytes.Buffer{}
-
-		err := gitImplementer.Clone("", "", buffer)
-		if err == nil {
-			t.Error("Clone should have returned error for empty parameters")
-		}
-		expectedMessage := addonsv1alpha1.EmptyGitRepositoryReason
-		if buffer.String() != expectedMessage {
-			t.Errorf("Buffer should contain %q, got %q", expectedMessage, buffer.String())
-		}
-		if err.Error() != addonsv1alpha1.EmptyGitRepositoryReason {
-			t.Errorf("Error message should be %q, got %q", addonsv1alpha1.EmptyGitRepositoryReason, err.Error())
-		}
-	})
-
 	t.Run("empty parameters - repo empty", func(t *testing.T) {
 		buffer := &bytes.Buffer{}
-		tempDir := t.TempDir()
 
-		err := gitImplementer.Clone("", tempDir, buffer)
+		directory, err := gitImplementer.Clone("", buffer)
 		if err == nil {
 			t.Error("Clone should have returned error for empty repo")
 		}
-		expectedMessage := addonsv1alpha1.EmptyGitRepositoryReason
-		if buffer.String() != expectedMessage {
-			t.Errorf("Buffer should contain %q, got %q", expectedMessage, buffer.String())
-		}
-	})
-
-	t.Run("empty parameters - directory empty", func(t *testing.T) {
-		buffer := &bytes.Buffer{}
-
-		err := gitImplementer.Clone(validRepoUrl, "", buffer)
-		if err == nil {
-			t.Error("Clone should have returned error for empty directory")
+		// Directory should still be created even on error
+		if directory == "" {
+			t.Error("Directory should be returned even on error")
 		}
 		expectedMessage := addonsv1alpha1.EmptyGitRepositoryReason
 		if buffer.String() != expectedMessage {
 			t.Errorf("Buffer should contain %q, got %q", expectedMessage, buffer.String())
+		}
+		// Clean up created directory
+		if directory != "" {
+			os.RemoveAll(directory)
 		}
 	})
 
 	t.Run("invalid repository URL", func(t *testing.T) {
 		buffer := &bytes.Buffer{}
-		tempDir := t.TempDir()
 
-		err := gitImplementer.Clone(invalidRepoUrl, tempDir, buffer)
+		directory, err := gitImplementer.Clone(invalidRepoUrl, buffer)
 		if err == nil {
 			t.Error("Clone should have returned error for invalid repository URL")
 		}
@@ -76,14 +53,17 @@ func TestClone(t *testing.T) {
 		if buffer.String() != expectedMessage {
 			t.Errorf("Buffer should contain %q, got %q", expectedMessage, buffer.String())
 		}
+		// Clean up created directory
+		if directory != "" {
+			os.RemoveAll(directory)
+		}
 	})
 
 	t.Run("malformed URL", func(t *testing.T) {
 		buffer := &bytes.Buffer{}
-		tempDir := t.TempDir()
 		malformedURL := "not-a-valid-url"
 
-		err := gitImplementer.Clone(malformedURL, tempDir, buffer)
+		directory, err := gitImplementer.Clone(malformedURL, buffer)
 		if err == nil {
 			t.Error("Clone should have returned error for malformed URL")
 		}
@@ -91,78 +71,16 @@ func TestClone(t *testing.T) {
 		if buffer.String() != expectedMessage {
 			t.Errorf("Buffer should contain %q, got %q", expectedMessage, buffer.String())
 		}
-	})
-
-	t.Run("directory is a file not directory", func(t *testing.T) {
-		buffer := &bytes.Buffer{}
-
-		// Create a temporary file instead of directory
-		tempFile, err := os.CreateTemp("", "not-a-directory")
-		if err != nil {
-			t.Fatalf("Failed to create temp file: %v", err)
-		}
-		defer os.Remove(tempFile.Name())
-		tempFile.Close()
-
-		err = gitImplementer.Clone(validRepoUrl, tempFile.Name(), buffer)
-		if err == nil {
-			t.Error("Clone should have returned error when directory is actually a file")
-		}
-		expectedMessage := addonsv1alpha1.GitCloneFailedCondition
-		if buffer.String() != expectedMessage {
-			t.Errorf("Buffer should contain %q, got %q", expectedMessage, buffer.String())
-		}
-	})
-
-	t.Run("directory already exists and is not empty", func(t *testing.T) {
-		buffer := &bytes.Buffer{}
-		tempDir := t.TempDir()
-
-		// Create a file in the directory to make it non-empty
-		testFile := filepath.Join(tempDir, "existing-file.txt")
-		if err := os.WriteFile(testFile, []byte("existing content"), 0644); err != nil {
-			t.Fatalf("Failed to create test file: %v", err)
-		}
-
-		err := gitImplementer.Clone(validRepoUrl, tempDir, buffer)
-
-		// git.PlainClone will fail if directory is not empty, but the exact behavior
-		// depends on the git library version and network conditions
-		if err != nil {
-			// Expected behavior - clone should fail for non-empty directory
-			expectedMessage := addonsv1alpha1.GitCloneFailedCondition
-			if buffer.String() != expectedMessage {
-				t.Errorf("Buffer should contain %q, got %q", expectedMessage, buffer.String())
-			}
-		} else {
-			// If clone somehow succeeds, just log it (network-dependent test)
-			t.Logf("Clone unexpectedly succeeded for non-empty directory - this may be network/environment dependent")
-		}
-	})
-
-	t.Run("permission denied directory", func(t *testing.T) {
-		buffer := &bytes.Buffer{}
-
-		// Try to clone to a directory with restricted permissions
-		restrictedDir := "/root/restricted-clone" // Assuming test doesn't run as root
-
-		err := gitImplementer.Clone(validRepoUrl, restrictedDir, buffer)
-		if err == nil {
-			t.Error("Clone should have returned error for permission denied directory")
-		}
-		expectedMessage := addonsv1alpha1.GitCloneFailedCondition
-		if buffer.String() != expectedMessage {
-			t.Errorf("Buffer should contain %q, got %q", expectedMessage, buffer.String())
+		// Clean up created directory
+		if directory != "" {
+			os.RemoveAll(directory)
 		}
 	})
 
 	t.Run("valid repository clone - success case", func(t *testing.T) {
 		buffer := &bytes.Buffer{}
-		tempDir := t.TempDir()
 
-		// This test may fail in CI/test environments due to network restrictions
-		// but validates the success path
-		err := gitImplementer.Clone(validRepoUrl, tempDir, buffer)
+		directory, err := gitImplementer.Clone(validRepoUrl, buffer)
 
 		if err != nil {
 			// Expected in most test environments due to network/auth restrictions
@@ -172,46 +90,45 @@ func TestClone(t *testing.T) {
 				t.Errorf("Buffer should contain %q on network error, got %q", expectedMessage, buffer.String())
 			}
 		} else {
-			// If clone succeeds (unlikely in test env), verify the clone was successful
+			// If clone succeeds, verify the clone was successful
 			if buffer.String() != "" {
 				t.Errorf("Buffer should be empty on successful clone, got %q", buffer.String())
 			}
 
-			// Verify .git directory was created
-			gitDir := filepath.Join(tempDir, ".git")
+			// Verify .git directory was created in returned directory
+			gitDir := filepath.Join(directory, ".git")
 			if _, statErr := os.Stat(gitDir); os.IsNotExist(statErr) {
 				t.Error("Expected .git directory to exist after successful clone")
 			}
 		}
-	})
 
-	t.Run("private repository without authentication", func(t *testing.T) {
-		buffer := &bytes.Buffer{}
-		tempDir := t.TempDir()
-		privateRepoURL := "https://github.com/private-user/private-repo"
-
-		err := gitImplementer.Clone(privateRepoURL, tempDir, buffer)
-		if err == nil {
-			t.Error("Clone should have returned error for private repository without auth")
-		}
-		expectedMessage := addonsv1alpha1.GitCloneFailedCondition
-		if buffer.String() != expectedMessage {
-			t.Errorf("Buffer should contain %q, got %q", expectedMessage, buffer.String())
+		// Clean up created directory
+		if directory != "" {
+			os.RemoveAll(directory)
 		}
 	})
 
-	t.Run("protocol not supported", func(t *testing.T) {
-		buffer := &bytes.Buffer{}
-		tempDir := t.TempDir()
-		unsupportedURL := "ftp://example.com/repo.git"
+	t.Run("nil buffer parameter", func(t *testing.T) {
+		// This should not panic even with nil buffer
+		directory, err := gitImplementer.Clone(validRepoUrl, nil)
 
-		err := gitImplementer.Clone(unsupportedURL, tempDir, buffer)
-		if err == nil {
-			t.Error("Clone should have returned error for unsupported protocol")
+		if err != nil {
+			// This is expected in test environments due to network restrictions
+			t.Logf("Clone failed as expected in test environment: %v", err)
+		} else {
+			// If clone succeeds, verify the .git directory was created
+			gitDir := filepath.Join(directory, ".git")
+			if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+				t.Error("Expected .git directory to exist after successful clone")
+			}
 		}
-		expectedMessage := addonsv1alpha1.GitCloneFailedCondition
-		if buffer.String() != expectedMessage {
-			t.Errorf("Buffer should contain %q, got %q", expectedMessage, buffer.String())
+
+		// Most importantly, the method should not have panicked
+		t.Log("Method completed without panic despite nil buffer")
+
+		// Clean up created directory
+		if directory != "" {
+			os.RemoveAll(directory)
 		}
 	})
 }

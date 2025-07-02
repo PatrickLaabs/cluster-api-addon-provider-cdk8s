@@ -8,11 +8,12 @@ import (
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"net/url"
+	"os"
 )
 
 // GitOperator defines the interface for git operations.
 type GitOperator interface {
-	Clone(repoUrl string, directory string, writer *bytes.Buffer) (err error)
+	Clone(repoUrl string, writer *bytes.Buffer) (directory string, err error)
 	Poll(repo string, branch string, directory string, writer *bytes.Buffer) (changes bool, err error)
 	Hash(repo string, branch string) (hash string, err error)
 }
@@ -21,12 +22,19 @@ type GitOperator interface {
 type GitImplementer struct{}
 
 // Clone clones the given repository to a local directory.
-func (g *GitImplementer) Clone(repoUrl string, directory string, writer *bytes.Buffer) (err error) {
+func (g *GitImplementer) Clone(repoUrl string, writer *bytes.Buffer) (directory string, err error) {
+	tempDirPattern := "cdk8s-git-clone-"
+
+	directory, err = os.MkdirTemp("", tempDirPattern)
+	if err != nil {
+		return directory, fmt.Errorf("failed to create temporary directory: %v", err)
+	}
+
 	// Check if repo and directory are empty.
 	if empty(repoUrl, directory) {
 		fmt.Fprintf(writer, "%s", addonsv1alpha1.EmptyGitRepositoryReason)
 
-		return fmt.Errorf("%s", addonsv1alpha1.EmptyGitRepositoryReason)
+		return directory, fmt.Errorf("%s", addonsv1alpha1.EmptyGitRepositoryReason)
 	}
 
 	_, err = git.PlainClone(directory, false, &git.CloneOptions{
@@ -35,10 +43,10 @@ func (g *GitImplementer) Clone(repoUrl string, directory string, writer *bytes.B
 	if err != nil {
 		fmt.Fprintf(writer, addonsv1alpha1.GitCloneFailedCondition)
 
-		return err
+		return directory, err
 	}
 
-	return err
+	return directory, err
 }
 
 // Poll polls for changes for the given remote git repository. Returns true, if current local commit hash and remote hash are not equal.
