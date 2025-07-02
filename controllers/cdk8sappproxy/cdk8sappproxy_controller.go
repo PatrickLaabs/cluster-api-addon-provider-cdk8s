@@ -48,19 +48,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-func (r *Reconciler) getCdk8sAppProxyForPolling(ctx context.Context, proxyName types.NamespacedName) (*addonsv1alpha1.Cdk8sAppProxy, error) {
-	cdk8sAppProxy := &addonsv1alpha1.Cdk8sAppProxy{}
-	if err := r.Get(ctx, proxyName, cdk8sAppProxy); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, nil
-		}
-
-		return nil, err
-	}
-
-	return cdk8sAppProxy, nil
-}
-
 func (r *Reconciler) checkIfResourceExists(ctx context.Context, dynClient dynamic.Interface, gvr schema.GroupVersionResource, namespace string, name string) (bool, error) {
 	resourceGetter := dynClient.Resource(gvr)
 	if namespace != "" {

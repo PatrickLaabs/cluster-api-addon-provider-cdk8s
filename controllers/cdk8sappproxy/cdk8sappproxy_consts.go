@@ -4,9 +4,3 @@ package cdk8sappproxy
 const (
 	Finalizer = "cdk8sappproxy.addons.cluster.x-k8s.io/finalizer"
 )
-
-// Operation represents the type of operation being performed by the cdk8sappproxy controller.
-const (
-	OperationDeletion = "deletion"
-	OperationNormal   = "normal"
-)
