@@ -151,6 +151,10 @@ func (r *Reconciler) reconcileNormal(ctx context.Context, cdk8sAppProxy *addonsv
 						logger.Error(err, "Prepare source for reconciliation")
 					}
 
+					if err = gitImpl.CleanUp(appSourcePath, 1*time.Minute); err != nil {
+						logger.Error(err, "Failed to clean up old git repository clone directory", "appSourcePath", appSourcePath)
+					}
+
 					// Synthesize and parse resources
 					_, err := r.synthesizeAndParseResources(appSourcePath, logger)
 					if err != nil {

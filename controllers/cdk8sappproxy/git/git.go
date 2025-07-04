@@ -9,6 +9,9 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"net/url"
 	"os"
+	"path/filepath"
+	"strings"
+	"time"
 )
 
 // GitOperator defines the interface for git operations.
@@ -16,6 +19,7 @@ type GitOperator interface {
 	Clone(repoUrl string, writer *bytes.Buffer) (directory string, err error)
 	Poll(repo string, branch string, directory string, writer *bytes.Buffer) (changes bool, err error)
 	Hash(repo string, branch string) (hash string, err error)
+	CleanUp(directory string, maxAge time.Duration) (err error)
 }
 
 // GitImplementer implements the GitOperator interface.
@@ -132,6 +136,46 @@ func (g *GitImplementer) Hash(repo string, branch string) (hash string, err erro
 		return hash, err
 	}
 	return hash, err
+}
+
+// CleanUp removes the local directory if it is older than maxAge.
+func (g *GitImplementer) CleanUp(directory string, maxAge time.Duration) (err error) {
+	tempDir := os.TempDir()
+
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		return fmt.Errorf("failed to read temporary directory: %v", err)
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		if !strings.HasPrefix(entry.Name(), "cdk8s-git-clone-") &&
+			!strings.HasPrefix(entry.Name(), "jsii-runtime.") {
+			continue
+		}
+
+		fullPath := filepath.Join(tempDir, entry.Name())
+
+		if fullPath == directory {
+			continue
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		if time.Since(info.ModTime()) > maxAge {
+			if err := os.RemoveAll(fullPath); err != nil {
+				continue
+			}
+		}
+	}
+
+	return err
 }
 
 // isUrl checks if the given string is a valid URL.
