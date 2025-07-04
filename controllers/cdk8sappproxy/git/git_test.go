@@ -897,7 +897,7 @@ func TestEmptyChecker(t *testing.T) {
 	}
 }
 
-// Helper functions
+// Helper functions.
 func setupTestRepo(t *testing.T) string {
 	t.Helper()
 	tempDir := t.TempDir()
