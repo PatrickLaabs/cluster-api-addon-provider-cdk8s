@@ -89,7 +89,7 @@ func (r *Reconciler) reconcileNormal(ctx context.Context, cdk8sAppProxy *addonsv
 	}
 
 	// Prepare a source path and get current commit hash
-	appSourcePath, _, err := r.prepareSource(cdk8sAppProxy, logger)
+	appSourcePath, err := r.prepareSource(cdk8sAppProxy, logger)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -108,10 +108,9 @@ func (r *Reconciler) reconcileNormal(ctx context.Context, cdk8sAppProxy *addonsv
 	}
 
 	// Determine if apply is needed
-	_, clusterList, err := r.applyNeeded(ctx, cdk8sAppProxy, parsedResources, logger)
+	clusterList, err := r.applyNeeded(ctx, cdk8sAppProxy, parsedResources, logger)
 	if err != nil {
 		logger.Error(err, "Failed to determine if apply is needed")
-		//return ctrl.Result{}, err
 	}
 
 	_, err = r.applyResourcesToClusters(ctx, cdk8sAppProxy, parsedResources, clusterList, proxyNamespacedName, logger)
@@ -146,7 +145,7 @@ func (r *Reconciler) reconcileNormal(ctx context.Context, cdk8sAppProxy *addonsv
 				}
 				if polling {
 					logger.Info("Detected changes in git repository, proceeding with reconciliation.")
-					appSourcePath, _, err = r.prepareSource(cdk8sAppProxy, logger)
+					appSourcePath, err = r.prepareSource(cdk8sAppProxy, logger)
 					if err != nil {
 						logger.Error(err, "Prepare source for reconciliation")
 					}
@@ -169,6 +168,7 @@ func (r *Reconciler) reconcileNormal(ctx context.Context, cdk8sAppProxy *addonsv
 					if len(parsedResources) == 0 {
 						if err := r.handleNoResources(ctx, cdk8sAppProxy, logger); err != nil {
 							logger.Error(err, "Failed to handle no resources case")
+
 							return
 						}
 
@@ -176,10 +176,9 @@ func (r *Reconciler) reconcileNormal(ctx context.Context, cdk8sAppProxy *addonsv
 					}
 
 					// Determine if apply is needed
-					_, clusterList, err := r.applyNeeded(ctx, cdk8sAppProxy, parsedResources, logger)
+					clusterList, err := r.applyNeeded(ctx, cdk8sAppProxy, parsedResources, logger)
 					if err != nil {
 						logger.Error(err, "Failed to determine if apply is needed")
-						//return ctrl.Result{}, err
 					}
 
 					_, err = r.applyResourcesToClusters(ctx, cdk8sAppProxy, parsedResources, clusterList, proxyNamespacedName, logger)
@@ -191,6 +190,7 @@ func (r *Reconciler) reconcileNormal(ctx context.Context, cdk8sAppProxy *addonsv
 				}
 			case <-ctx.Done():
 				logger.Info("Stopping git repository polling loop due to context cancellation.")
+
 				return
 			}
 		}
@@ -228,16 +228,16 @@ func (r *Reconciler) handleNoResources(ctx context.Context, cdk8sAppProxy *addon
 	return nil
 }
 
-func (r *Reconciler) applyNeeded(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, parsedResources []*unstructured.Unstructured, logger logr.Logger) (bool, clusterv1.ClusterList, error) {
+func (r *Reconciler) applyNeeded(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, parsedResources []*unstructured.Unstructured, logger logr.Logger) (clusterv1.ClusterList, error) {
 	var clusterList clusterv1.ClusterList
 
 	_, list, err := r.verifyResourcesOnClusters(ctx, cdk8sAppProxy, parsedResources, logger)
 	if err != nil {
-		return false, clusterList, err
+		return clusterList, err
 	}
 	clusterList = list
 
-	return true, clusterList, nil
+	return clusterList, nil
 }
 
 func (r *Reconciler) verifyResourcesOnClusters(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, parsedResources []*unstructured.Unstructured, logger logr.Logger) (bool, clusterv1.ClusterList, error) {
@@ -305,107 +305,6 @@ func (r *Reconciler) verifyResourcesOnClusters(ctx context.Context, cdk8sAppProx
 	return foundMissingResourcesOnAnyCluster, clusterList, nil
 }
 
-func (r *Reconciler) checkGitOrAnnotationTriggers(cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, currentCommitHash string, forceSynthAndApplyDueToDeletion bool, logger logr.Logger) bool {
-	// Check for periodic git poller trigger
-	if cdk8sAppProxy.Status.LastRemoteGitHash != "" &&
-		cdk8sAppProxy.Status.LastRemoteGitHash != cdk8sAppProxy.Status.LastProcessedGitHash &&
-		cdk8sAppProxy.Status.LastRemoteGitHash != currentCommitHash {
-		logger.Info("Reconciliation proceeding due to change detected by git poller.",
-			"lastRemoteGitHash", cdk8sAppProxy.Status.LastRemoteGitHash,
-			"lastProcessedGitHash", cdk8sAppProxy.Status.LastProcessedGitHash,
-			"currentCommitHash", currentCommitHash)
-
-		return true
-	}
-
-	// Check for git repository changes
-	if cdk8sAppProxy.Spec.GitRepository != nil && cdk8sAppProxy.Spec.GitRepository.URL != "" {
-		if currentCommitHash == "" {
-			logger.Info("currentCommitHash is unexpectedly empty for Git source; proceeding with update as a precaution.")
-
-			return true
-		}
-
-		lastProcessedGitHash := cdk8sAppProxy.Status.LastProcessedGitHash
-		gitSpecRef := cdk8sAppProxy.Spec.GitRepository.Reference
-		repositoryHasChanged := currentCommitHash != lastProcessedGitHash
-		isInitialDeployment := lastProcessedGitHash == ""
-
-		if isInitialDeployment {
-			logger.Info("Initial deployment or no last processed hash found. Proceeding with cdk8s synth and apply.", "currentCommitHash", currentCommitHash, "reference", gitSpecRef)
-
-			return true
-		}
-		if repositoryHasChanged {
-			logger.Info("Git repository has changed (current clone vs last processed), proceeding with update.", "currentCommitHash", currentCommitHash, "lastProcessedGitHash", lastProcessedGitHash, "reference", gitSpecRef)
-
-			return true
-		}
-		logger.Info("No new Git changes detected (current clone matches last processed, and no pending poller detection).", "commitHash", currentCommitHash, "reference", gitSpecRef)
-	} else if cdk8sAppProxy.Status.ObservedGeneration == 0 {
-		logger.Info("Initial processing for source type without explicit change detection. Proceeding with cdk8s synth and apply.")
-
-		return true
-	}
-
-	// Check for deletion trigger
-	if forceSynthAndApplyDueToDeletion {
-		logger.Info("Forcing synth and apply because reconciliation was triggered by a resource deletion")
-
-		return true
-	}
-
-	return false
-}
-
-func (r *Reconciler) reestablishWatchesForExistingResources(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) error {
-	// Get the source and parse resources to know what should be watched
-	appSourcePath, _, err := r.prepareSource(cdk8sAppProxy, logger)
-	if err != nil {
-		return err
-	}
-
-	parsedResources, err := r.synthesizeAndParseResources(appSourcePath, logger)
-	if err != nil {
-		return err
-	}
-
-	// Get target clusters
-	selector, err := metav1.LabelSelectorAsSelector(&cdk8sAppProxy.Spec.ClusterSelector)
-	if err != nil {
-		return err
-	}
-
-	var clusterList clusterv1.ClusterList
-	if err := r.List(ctx, &clusterList, client.MatchingLabelsSelector{Selector: selector}); err != nil {
-		return err
-	}
-
-	proxyNamespacedName := types.NamespacedName{Name: cdk8sAppProxy.Name, Namespace: cdk8sAppProxy.Namespace}
-
-	// Re-establish watches for each resource on each cluster
-	for _, cluster := range clusterList.Items {
-		dynamicClient, err := r.getDynamicClientForCluster(ctx, cluster.Namespace, cluster.Name)
-		if err != nil {
-			logger.Error(err, "Failed to get dynamic client for watch re-establishment", "cluster", cluster.Name)
-
-			continue
-		}
-
-		for _, resource := range parsedResources {
-			gvk := resource.GroupVersionKind()
-
-			if err := r.WatchManager.StartWatch(ctx, dynamicClient, gvk, resource.GetNamespace(), resource.GetName(), proxyNamespacedName); err != nil {
-				logger.Error(err, "Failed to re-establish watch", "cluster", cluster.Name, "resource", resource.GetName())
-			} else {
-				logger.Info("Re-established watch for existing resource", "cluster", cluster.Name, "resource", resource.GetName())
-			}
-		}
-	}
-
-	return nil
-}
-
 //nolint:unparam // ctrl.Result is required for controller-runtime reconciler pattern
 func (r *Reconciler) applyResourcesToClusters(ctx context.Context, cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, parsedResources []*unstructured.Unstructured, clusterList clusterv1.ClusterList, proxyNamespacedName types.NamespacedName, logger logr.Logger) (ctrl.Result, error) {
 	logger.Info("Proceeding with application of resources to target clusters.")
@@ -440,7 +339,6 @@ func (r *Reconciler) applyResourcesToClusters(ctx context.Context, cdk8sAppProxy
 		cdk8sAppProxy.Status.ObservedGeneration = cdk8sAppProxy.Generation
 		conditions.MarkTrue(cdk8sAppProxy, addonsv1alpha1.DeploymentProgressingCondition)
 		if cdk8sAppProxy.Spec.GitRepository != nil && cdk8sAppProxy.Spec.GitRepository.URL != "" {
-			//cdk8sAppProxy.Status.LastProcessedGitHash = currentCommitHash
 		}
 		if err := r.Status().Update(ctx, cdk8sAppProxy); err != nil {
 			logger.Error(err, "Failed to update status when no resources to apply")
@@ -504,8 +402,6 @@ func (r *Reconciler) applyResourcesToClusters(ctx context.Context, cdk8sAppProxy
 
 	// If we reach here, the overallSuccess is true.
 	if cdk8sAppProxy.Spec.GitRepository != nil && cdk8sAppProxy.Spec.GitRepository.URL != "" {
-		//cdk8sAppProxy.Status.LastProcessedGitHash = currentCommitHash
-		//logger.Info("Successfully updated LastProcessedGitHash in status after application", "hash", currentCommitHash)
 	}
 
 	cdk8sAppProxy.Status.ObservedGeneration = cdk8sAppProxy.Generation

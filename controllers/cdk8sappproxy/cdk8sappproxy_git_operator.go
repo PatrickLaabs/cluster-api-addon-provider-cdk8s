@@ -8,13 +8,12 @@ import (
 	"path/filepath"
 )
 
-func (r *Reconciler) prepareSource(cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (appSourcePath string, currentCommitHash string, err error) {
+func (r *Reconciler) prepareSource(cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, logger logr.Logger) (appSourcePath string, err error) {
 	gitImpl := &gitoperator.GitImplementer{}
 	var buf bytes.Buffer
 	gitSpec := cdk8sAppProxy.Spec.GitRepository
 
 	if cdk8sAppProxy.Spec.GitRepository != nil && cdk8sAppProxy.Spec.GitRepository.URL != "" {
-
 		directory, err := gitImpl.Clone(gitSpec.URL, &buf)
 		if err != nil {
 			logger.Error(err, addonsv1alpha1.GitCloneFailedCondition, "Failed to clone git repository")
@@ -25,7 +24,7 @@ func (r *Reconciler) prepareSource(cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, 
 			logger.Error(err, addonsv1alpha1.GitHashFailureReason, "Failed to get local git hash")
 		}
 
-		currentCommitHash = retrieveCommitHash
+		currentCommitHash := retrieveCommitHash
 		if currentCommitHash != "" && cdk8sAppProxy != nil {
 			cdk8sAppProxy.Status.LastRemoteGitHash = currentCommitHash
 			logger.Info("Updated cdk8sAppProxy.Status.LastRemoteGitHash with the latest commit hash from remote", "lastRemoteGitHash", currentCommitHash)
@@ -36,8 +35,8 @@ func (r *Reconciler) prepareSource(cdk8sAppProxy *addonsv1alpha1.Cdk8sAppProxy, 
 			logger.Info("Adjusted appSourcePath for repository subpath", "subPath", gitSpec.Path, "finalPath", appSourcePath)
 		}
 
-		return appSourcePath, currentCommitHash, err
+		return appSourcePath, err
 	}
 
-	return appSourcePath, currentCommitHash, nil
+	return appSourcePath, err
 }

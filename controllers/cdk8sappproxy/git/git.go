@@ -31,7 +31,7 @@ func (g *GitImplementer) Clone(repoUrl string, writer *bytes.Buffer) (directory 
 
 	directory, err = os.MkdirTemp("", tempDirPattern)
 	if err != nil {
-		return directory, fmt.Errorf("failed to create temporary directory: %v", err)
+		return directory, fmt.Errorf("failed to create temporary directory: %w", err)
 	}
 
 	// Check if repo and directory are empty.
@@ -102,7 +102,7 @@ func (g *GitImplementer) Hash(repo string, branch string) (hash string, err erro
 		refs, err := remoterepo.List(&git.ListOptions{})
 		if err != nil {
 			//return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
-			return hash, fmt.Errorf("failed to list remote refs: %v", err)
+			return hash, fmt.Errorf("failed to list remote refs: %w", err)
 		}
 
 		refName := plumbing.NewBranchReferenceName(branch)
@@ -118,7 +118,7 @@ func (g *GitImplementer) Hash(repo string, branch string) (hash string, err erro
 		localRepo, err := git.PlainOpen(repo)
 		if err != nil {
 			//return hash, fmt.Errorf("%s", addonsv1alpha1.GitHashFailureReason)
-			return hash, fmt.Errorf("failed to open local git repository: %v", err)
+			return hash, fmt.Errorf("failed to open local git repository: %w", err)
 		}
 
 		headRef, err := localRepo.Head()
@@ -135,6 +135,7 @@ func (g *GitImplementer) Hash(repo string, branch string) (hash string, err erro
 
 		return hash, err
 	}
+
 	return hash, err
 }
 
