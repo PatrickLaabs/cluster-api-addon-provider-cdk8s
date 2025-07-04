@@ -472,6 +472,240 @@ func TestHash(t *testing.T) {
 	})
 }
 
+func TestCleanUp(t *testing.T) {
+	gitImplementer := &GitImplementer{}
+
+	t.Run("cleanup old directories but preserve current", func(t *testing.T) {
+		// Create old directories that should be cleaned up
+		oldDir1, err := os.MkdirTemp("", "cdk8s-git-clone-")
+		if err != nil {
+			t.Fatalf("Failed to create temp dir: %v", err)
+		}
+
+		oldDir2, err := os.MkdirTemp("", "cdk8s-git-clone-")
+		if err != nil {
+			t.Fatalf("Failed to create temp dir: %v", err)
+		}
+
+		// Create current directory (should be preserved)
+		currentDir, err := os.MkdirTemp("", "cdk8s-git-clone-")
+		if err != nil {
+			t.Fatalf("Failed to create temp dir: %v", err)
+		}
+
+		// Age the old directories
+		oldTime := time.Now().Add(-2 * time.Hour)
+		if err := os.Chtimes(oldDir1, oldTime, oldTime); err != nil {
+			t.Fatalf("Failed to change times for old dir 1: %v", err)
+		}
+		if err := os.Chtimes(oldDir2, oldTime, oldTime); err != nil {
+			t.Fatalf("Failed to change times for old dir 2: %v", err)
+		}
+
+		// Run cleanup with 1 hour max age
+		err = gitImplementer.CleanUp(currentDir, 1*time.Hour)
+		if err != nil {
+			t.Errorf("CleanUp returned error: %v", err)
+		}
+
+		// Verify old directories were removed
+		if _, err := os.Stat(oldDir1); !os.IsNotExist(err) {
+			t.Error("Old directory 1 should have been removed")
+			os.RemoveAll(oldDir1) // cleanup
+		}
+
+		if _, err := os.Stat(oldDir2); !os.IsNotExist(err) {
+			t.Error("Old directory 2 should have been removed")
+			os.RemoveAll(oldDir2) // cleanup
+		}
+
+		// Verify current directory is preserved
+		if _, err := os.Stat(currentDir); os.IsNotExist(err) {
+			t.Error("Current directory should not have been removed")
+		} else {
+			os.RemoveAll(currentDir) // cleanup
+		}
+	})
+
+	t.Run("respects maxAge parameter", func(t *testing.T) {
+		// Create recent directory that shouldn't be cleaned
+		recentDir, err := os.MkdirTemp("", "cdk8s-git-clone-")
+		if err != nil {
+			t.Fatalf("Failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(recentDir)
+
+		currentDir, err := os.MkdirTemp("", "cdk8s-git-clone-")
+		if err != nil {
+			t.Fatalf("Failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(currentDir)
+
+		// Age the recent directory only slightly
+		recentTime := time.Now().Add(-30 * time.Minute)
+		if err := os.Chtimes(recentDir, recentTime, recentTime); err != nil {
+			t.Fatalf("Failed to change times for recent dir: %v", err)
+		}
+
+		// Run cleanup with 1 hour max age
+		err = gitImplementer.CleanUp(currentDir, 1*time.Hour)
+		if err != nil {
+			t.Errorf("CleanUp returned error: %v", err)
+		}
+
+		// Recent directory should still exist
+		if _, err := os.Stat(recentDir); os.IsNotExist(err) {
+			t.Error("Recent directory should not have been removed")
+		}
+	})
+
+	t.Run("ignores non-matching directories", func(t *testing.T) {
+		// Create directory with different prefix
+		otherDir, err := os.MkdirTemp("", "other-prefix-")
+		if err != nil {
+			t.Fatalf("Failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(otherDir)
+
+		currentDir, err := os.MkdirTemp("", "cdk8s-git-clone-")
+		if err != nil {
+			t.Fatalf("Failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(currentDir)
+
+		// Age the other directory
+		oldTime := time.Now().Add(-2 * time.Hour)
+		if err := os.Chtimes(otherDir, oldTime, oldTime); err != nil {
+			t.Fatalf("Failed to change times for other dir: %v", err)
+		}
+
+		// Run cleanup
+		err = gitImplementer.CleanUp(currentDir, 1*time.Hour)
+		if err != nil {
+			t.Errorf("CleanUp returned error: %v", err)
+		}
+
+		// Other directory should still exist (different prefix)
+		if _, err := os.Stat(otherDir); os.IsNotExist(err) {
+			t.Error("Directory with different prefix should not have been removed")
+		}
+	})
+
+	t.Run("handles empty current directory parameter", func(t *testing.T) {
+		// Create old directory
+		oldDir, err := os.MkdirTemp("", "cdk8s-git-clone-")
+		if err != nil {
+			t.Fatalf("Failed to create temp dir: %v", err)
+		}
+
+		// Age the directory
+		oldTime := time.Now().Add(-2 * time.Hour)
+		if err := os.Chtimes(oldDir, oldTime, oldTime); err != nil {
+			t.Fatalf("Failed to change times for old dir: %v", err)
+		}
+
+		// Run cleanup with empty current directory
+		err = gitImplementer.CleanUp("", 1*time.Hour)
+		if err != nil {
+			t.Errorf("CleanUp returned error: %v", err)
+		}
+
+		// Old directory should be removed since no current directory to preserve
+		if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
+			t.Error("Old directory should have been removed when no current directory specified")
+			os.RemoveAll(oldDir) // cleanup
+		}
+	})
+
+	t.Run("cleanup with zero max age removes all old directories", func(t *testing.T) {
+		// Create multiple directories
+		dirs := make([]string, 3)
+		for i := 0; i < 3; i++ {
+			dir, err := os.MkdirTemp("", "cdk8s-git-clone-")
+			if err != nil {
+				t.Fatalf("Failed to create temp dir: %v", err)
+			}
+			dirs[i] = dir
+		}
+
+		currentDir := dirs[2] // Last one is current
+
+		// Age the first two directories slightly
+		oldTime := time.Now().Add(-1 * time.Second)
+		if err := os.Chtimes(dirs[0], oldTime, oldTime); err != nil {
+			t.Fatalf("Failed to change times for dir 0: %v", err)
+		}
+		if err := os.Chtimes(dirs[1], oldTime, oldTime); err != nil {
+			t.Fatalf("Failed to change times for dir 1: %v", err)
+		}
+
+		// Run cleanup with zero max age
+		err := gitImplementer.CleanUp(currentDir, 0)
+		if err != nil {
+			t.Errorf("CleanUp returned error: %v", err)
+		}
+
+		// First two should be removed
+		for i := 0; i < 2; i++ {
+			if _, err := os.Stat(dirs[i]); !os.IsNotExist(err) {
+				t.Errorf("Directory %d should have been removed", i)
+				os.RemoveAll(dirs[i])
+			}
+		}
+
+		// Current should remain
+		if _, err := os.Stat(currentDir); os.IsNotExist(err) {
+			t.Error("Current directory should not have been removed")
+		} else {
+			os.RemoveAll(currentDir)
+		}
+	})
+
+	t.Run("handles directories with files inside", func(t *testing.T) {
+		// Create directory with files (simulating actual git clone)
+		oldDir, err := os.MkdirTemp("", "cdk8s-git-clone-")
+		if err != nil {
+			t.Fatalf("Failed to create temp dir: %v", err)
+		}
+
+		// Create some files inside
+		testFile := filepath.Join(oldDir, "test.txt")
+		if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
+			t.Fatalf("Failed to create test file: %v", err)
+		}
+
+		// Create subdirectory
+		subDir := filepath.Join(oldDir, "subdir")
+		if err := os.Mkdir(subDir, 0755); err != nil {
+			t.Fatalf("Failed to create subdirectory: %v", err)
+		}
+
+		currentDir, err := os.MkdirTemp("", "cdk8s-git-clone-")
+		if err != nil {
+			t.Fatalf("Failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(currentDir)
+
+		// Age the old directory
+		oldTime := time.Now().Add(-2 * time.Hour)
+		if err := os.Chtimes(oldDir, oldTime, oldTime); err != nil {
+			t.Fatalf("Failed to change times for old dir: %v", err)
+		}
+
+		// Run cleanup
+		err = gitImplementer.CleanUp(currentDir, 1*time.Hour)
+		if err != nil {
+			t.Errorf("CleanUp returned error: %v", err)
+		}
+
+		// Directory and all contents should be removed
+		if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
+			t.Error("Directory with contents should have been removed")
+			os.RemoveAll(oldDir) // cleanup
+		}
+	})
+}
+
 func TestIsUrl(t *testing.T) {
 	tests := []struct {
 		name           string
