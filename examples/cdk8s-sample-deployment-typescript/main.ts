@@ -13,6 +13,7 @@ export class NginxChart extends Chart {
       metadata: {
         name: NginxChart.CHART_NAME,
         labels: nginxLabels,
+        namespace: 'default',
       },
       spec: {
         replicas: 3,
@@ -49,6 +50,7 @@ export class HeadlampChart extends Chart {
       metadata: {
         name: headlampDeploymentName,
         labels: headlampLabels,
+        namespace: 'default',
       },
       spec: {
         replicas: 3,

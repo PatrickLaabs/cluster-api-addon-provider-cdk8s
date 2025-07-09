@@ -62,14 +62,6 @@ type Cdk8sAppProxyStatus struct {
 	// ObservedGeneration is the last generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
-
-	// LastProcessedGitHash stores the commit hash of the last successfully reconciled Git state.
-	// +optional
-	LastProcessedGitHash string `json:"lastProcessedGitHash,omitempty"`
-
-	// LastRemoteGitHash is the last commit hash fetched from the remote git repository.
-	// +optional
-	LastRemoteGitHash string `json:"lastRemoteGitHash,omitempty"`
 }
 
 // +kubebuilder:object:root=true

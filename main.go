@@ -17,18 +17,16 @@ limitations under the License.
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
 	"time"
 
 	addonsv1alpha1 "github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/api/v1alpha1"
-	caapccontroller "github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/controllers/cdk8sappproxy"
+	caapccontroller "github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/controllers"
 	"github.com/PatrickLaabs/cluster-api-addon-provider-cdk8s/version"
 	"github.com/spf13/pflag"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -206,10 +204,9 @@ func main() {
 	ctx := ctrl.SetupSignalHandler()
 
 	if err = (&caapccontroller.Reconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorderFor("cdk8sappproxy-controller"),
-		ActiveGitPollers: make(map[types.NamespacedName]context.CancelFunc),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("cdk8sappproxy-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Cdk8sAppProxy")
 		os.Exit(1)
