@@ -231,7 +231,7 @@ CAPI_KIND_CLUSTER_NAME ?= capi-test
 # It is set by Prow GIT_TAG, a git-based tag of the form vYYYYMMDD-hash, e.g., v20210120-v0.3.10-308-gc61521971
 
 # Next release is: v1.0.0-preview
-TAG ?= v1.0.0-preview.5
+TAG ?= v1.0.0-preview.72
 ARCH ?= $(shell go env GOARCH)
 ALL_ARCH = amd64 arm arm64
 
@@ -442,6 +442,7 @@ test-junit: $(SETUP_ENVTEST) $(GOTESTSUM) ## Run unit and integration tests and 
 .PHONY: test-cover
 test-cover: ## Run unit and integration tests and generate a coverage report
 	$(MAKE) test TEST_ARGS="$(TEST_ARGS) -coverprofile=out/coverage.out"
+	mkdir out
 	go tool cover -func=out/coverage.out -o out/coverage.txt
 	go tool cover -html=out/coverage.out -o out/coverage.html
 

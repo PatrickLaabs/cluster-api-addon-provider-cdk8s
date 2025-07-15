@@ -175,14 +175,6 @@ spec:
                   - type
                   type: object
                 type: array
-              lastProcessedGitHash:
-                description: LastProcessedGitHash stores the commit hash of the last
-                  successfully reconciled Git state.
-                type: string
-              lastRemoteGitHash:
-                description: LastRemoteGitHash is the last commit hash fetched from
-                  the remote git repository.
-                type: string
               observedGeneration:
                 description: ObservedGeneration is the last generation observed by
                   the controller.
