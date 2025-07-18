@@ -1,3 +1,5 @@
+⚠️ This Repository has been moved to https://github.com/eitco/cluster-api-addon-provider-cdk8s ⚠️
+
 <a href="https://cluster-api.sigs.k8s.io"><img alt="capi" src="./logos/kubernetes-cluster-logos_final-02.svg" width="160x" /></a>
 <p>
 <a href="https://godoc.org/sigs.k8s.io/cluster-api"><img src="https://godoc.org/sigs.k8s.io/cluster-api?status.svg"></a>
